@@ -1,0 +1,72 @@
+# Decisions
+
+Short records. Read this when you are tempted to change something structural.
+
+## 1. Modular monolith, not microservices
+
+One Spring Boot app with package-level module boundaries
+(`referentiel`, `circulation`, `exploitation`, `iam`, `analytique`). Modules
+talk through service interfaces, never through each other's repositories.
+
+Rejected microservices: a solo intern with under a month cannot operate a
+distributed system, and the spec's availability target does not require one.
+The package boundaries mean a later split is mechanical.
+
+## 2. The simulator is a separate process behind an HTTP contract
+
+The alternative — a `@Scheduled` bean generating positions inside the domain
+layer — is faster to write and architecturally dead. It makes the whole system
+a mock with no migration path to real hardware.
+
+By putting the producer outside and defining `POST /ingest/positions`, Trino
+consumes a GPS feed from an authenticated external source. Replacing the
+simulator with real AVL equipment is a configuration change. This is the
+strongest claim in the soutenance; do not collapse it for convenience.
+
+## 3. SSE, not WebSocket
+
+Traffic is server -> client only. SSE gives automatic reconnection with
+`Last-Event-ID`, survives proxies, and needs no sub-protocol. WebSocket would
+add a handshake, a heartbeat protocol, and STOMP or a hand-rolled frame format
+for nothing. Revisit only if the client ever needs to push.
+
+## 4. No Redis
+
+Redis was in the original sketch for hot state and cross-instance pub/sub. The
+deliverable is a single local instance, so there is nothing to fan out between.
+`EtatCirculationStore` is a `ConcurrentHashMap` behind an interface; swapping
+in Redis later is one class.
+
+Say this out loud in the report — "we deliberately did not add infrastructure
+we could not justify" is a stronger engineering statement than an unused Redis
+container.
+
+## 5. No PostGIS
+
+The only geometry operation needed is progress along a polyline: given a
+distance travelled, return a lat/lon. That is haversine plus linear
+interpolation, about 60 lines in `GeometrieLigne`. The spec contains no spatial
+query. PostGIS would cost setup time and buy nothing.
+
+## 6. Delay propagates forward, ETA is speed-based
+
+When a course is N minutes late at station K, every downstream `passage_gare`
+inherits N minutes unless the train makes up time. ETA for the next station is
+`(pk_suivante - avancement) / vitesse_moyenne_recente`, floored at the
+theoretical time. No machine learning, no historical regression. It is honest
+and it is explainable in a defence.
+
+## 7. Notifications ship as an interface, not four integrations
+
+`CanalNotification` with `EnvoyerAsync(Notification)`. Implementations: in-app
+(SSE), and a logging stub shaped like an SMS gateway. Email, SMS and push are
+documented as adapters with the integration points marked. Four half-working
+channels are worse than one working channel and a clear design.
+
+## 8. Availability is designed for, not claimed
+
+The spec asks for 99.9% and 24/7. Neither is testable in this delivery. What is
+actually implemented: stateless API layer, Spring Actuator health and readiness
+probes, graceful degradation when the position feed stops (courses move to
+`ARRET_EXCEPTIONNEL` rather than freezing on stale data), and Postgres backup
+documented as a `pg_dump` cron. Report it as design intent with the gap stated.

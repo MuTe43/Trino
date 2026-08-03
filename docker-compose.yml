@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    container_name: trino-db
+    environment:
+      POSTGRES_DB: trino
+      POSTGRES_USER: trino
+      POSTGRES_PASSWORD: trino
+    ports:
+      - "5432:5432"
+    volumes:
+      - trino-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trino -d trino"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  trino-db-data:

@@ -1,0 +1,13 @@
+# Claude Code tooling (agents, slash commands) — not part of the project
+.claude/
+
+# IDE
+**/.idea/
+*.iml
+
+# Maven build output
+**/target/
+
+# OS cruft
+.DS_Store
+Thumbs.db
