@@ -120,7 +120,89 @@ Six défauts trouvés et corrigés, dont quatre par une passe de revue automatis
 passe de revue outillée plutôt qu'à l'exécution. C'est un argument méthodologique
 qui vaut d'être fait explicitement.*
 
-### Phase 1 — (à compléter)
+### Phase 1 — auth & rôles
+
+**Le jeton de rafraîchissement ne peut pas voyager en JSON côté client.**
+Le frontend stocke l'access token en mémoire et reçoit le refresh token dans
+un cookie `httpOnly` — c'est une exigence de la phase, pour qu'un script
+injecté ne puisse pas l'exfiltrer. Mais un cookie `httpOnly` est par
+définition illisible en JavaScript : l'intercepteur de rafraîchissement ne
+peut donc pas le relire pour le renvoyer dans le corps `{refreshToken}` que
+`POST /auth/refresh` attendait dans une première version. Corrigé en faisant
+lire l'endpoint directement dans le cookie (`@CookieValue`), avec repli sur le
+corps JSON pour un client non-navigateur. Sans ce correctif, le rafraîchissement
+échouait silencieusement à chaque appel — l'utilisateur aurait été déconnecté
+de force 30 minutes après chaque connexion.
+
+**Séparation `securite` / `iam`.** `securite` (filtre JWT, config Spring
+Security) ne dépend jamais des entités ou des repositories `iam` : il passe
+par `UtilisateurService` et manipule des DTO. Ça garde la couche sécurité
+testable sans base de données et évite un couplage circulaire si `iam`
+évolue.
+
+**Deuxième passe : six défauts trouvés par relecture, invisibles à l'exécution
+manuelle.** Comme en phase 0, une passe de revue outillée (agent dédié) a
+trouvé des défauts que le script d'acceptation seul ne pouvait pas voir
+puisqu'il ne les exerçait pas :
+- Les canaux SSE et `/actuator` tombaient dans le `authenticated()` par
+  défaut faute de règle `permitAll` explicite — contraire à la règle de phase
+  et à une régression sur le futur healthcheck du docker-compose (phase 7).
+- `Keys.hmacShaKeyFor` choisit l'algorithme HMAC selon la longueur de la clé :
+  le secret de dev de 59 octets donnait du HS384, pas HS256 comme demandé.
+  Corrigé par un `signWith` explicite.
+- `rafraichir` révoquait le jeton présenté et en émettait un nouveau — de la
+  rotation, explicitement hors périmètre. Conséquence concrète : deux 401
+  concurrents sur le frontend déclenchent deux rafraîchissements, le second
+  invalidant le premier, et l'utilisateur se retrouve déconnecté de force.
+  Corrigé en renvoyant le même jeton, sans le révoquer.
+- Ni `login` ni `rafraichir` ne vérifiaient `actif` : un compte désactivé
+  obtenait quand même un jeton valide (le contrôle n'existait qu'en aval,
+  dans le filtre JWT). Corrigé.
+- Le gestionnaire d'erreur du filtre de sécurité écrivait la réponse sans
+  `setCharacterEncoding("UTF-8")` : les 401/403 émis par la chaîne de filtres
+  affichaient des caractères mal encodés (« Acc?s refus? » au lieu de
+  « Accès refusé »), contrairement à ceux du `@RestControllerAdvice`.
+- `AuthController.refresh` choisissait lui-même la source du jeton (corps ou
+  cookie) avant d'appeler le service — de la logique dans un contrôleur,
+  contraire à l'invariant du `CLAUDE.md`. Déplacé dans `UtilisateurService`.
+
+**`@PreAuthorize` sur les exceptions `AccessDeniedException`.** Une exception
+levée par `@PreAuthorize` sur une méthode de service, appelée depuis un
+contrôleur, est interceptée par la résolution d'exceptions de
+`DispatcherServlet` (donc par `@RestControllerAdvice`), pas par la chaîne de
+filtres Spring Security. Il a donc fallu un gestionnaire dédié dans
+`ApiExceptionHandler` en plus du `AccessDeniedHandler` de
+`ConfigurationSecurite`, qui ne couvre que les refus au niveau URL
+(`authenticated()`).
+
+**`@PreAuthorize` seul renvoyait 400 au lieu de 403.** Trouvé en testant
+réellement le script d'acceptation (pas seulement à la compilation) : un
+voyageur qui POSTait `/gares` avec un corps invalide recevait 400
+`VALIDATION_ECHOUEE`, pas 403. Cause : `@Valid` sur le DTO s'exécute pendant
+la résolution des arguments du contrôleur, avant même l'appel à la méthode de
+service — donc avant que le proxy AOP de `@PreAuthorize` n'ait la moindre
+chance de refuser quoi que ce soit. Corrigé en dupliquant la règle de rôle
+dans `ConfigurationSecurite` (`authorizeHttpRequests`, au niveau URL, POST/PUT
+/DELETE sur `/gares`, `/lignes`, `/trains` → `ADMINISTRATEUR`), qui s'exécute
+dans la chaîne de filtres, avant la validation. Le `@PreAuthorize` sur les
+services reste en place en défense en profondeur. *Argument méthodologique à
+répéter comme pour la phase 0 : ce défaut n'était visible qu'à l'exécution,
+la compilation et le typecheck ne l'auraient jamais révélé.*
+
+**Le cookie de rafraîchissement invisible pour le middleware du frontend.**
+Trouvé en testant le vrai flux de connexion dans un navigateur (pas seulement
+via `curl`). Le cookie `refreshToken` était scopé `Path=/api/v1/auth` — ce qui
+a du sens vu du seul point de vue du backend, mais le middleware Next.js tourne
+pour les requêtes vers `/admin` et `/exploitation` sur le port 3000, un chemin
+totalement différent. Le nom d'hôte `localhost` est partagé entre les deux
+origines (le matching de domaine des cookies ignore le port), mais le matching
+de chemin est exact : un cookie scopé `/api/v1/auth` n'est jamais envoyé pour
+une requête vers `/admin`. Résultat : le garde-fou du middleware redirigeait
+systématiquement vers `/connexion`, même juste après une connexion réussie.
+Corrigé en passant le `Path` du cookie à `/`. Sans un test réel dans un
+navigateur, ce défaut aurait été invisible : aucun test `curl` ni aucune
+compilation ne l'aurait révélé, puisque chaque appel HTTP pris isolément se
+comportait correctement.
 
 ---
 

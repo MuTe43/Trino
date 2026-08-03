@@ -6,6 +6,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -31,6 +32,16 @@ public class ApiExceptionHandler {
     @ExceptionHandler(RessourceIntrouvableException.class)
     public ResponseEntity<ErreurDTO> gererRessourceIntrouvable(RessourceIntrouvableException ex) {
         return reponse(HttpStatus.NOT_FOUND, "INTROUVABLE", ex.getMessage(), List.of());
+    }
+
+    @ExceptionHandler(AuthentificationEchoueeException.class)
+    public ResponseEntity<ErreurDTO> gererAuthentificationEchouee(AuthentificationEchoueeException ex) {
+        return reponse(HttpStatus.UNAUTHORIZED, "NON_AUTHENTIFIE", ex.getMessage(), List.of());
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErreurDTO> gererAccesRefuse(AccessDeniedException ex) {
+        return reponse(HttpStatus.FORBIDDEN, "ACCES_REFUSE", "Accès refusé.", List.of());
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

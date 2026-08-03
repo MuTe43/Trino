@@ -1,5 +1,8 @@
 # Phase 6 — Incidents + console exploitation (2 days)
 
+Also read: `docs/architecture/domain-model.md` (Role enum, incident tables) and
+`docs/architecture/api-contract.md` (Incidents section).
+
 Your #3 priority. **This is the cut line.** If you reach the last week without
 phases 0-5 fully working, skip this and go straight to phase 7. A polished
 subset defends better than a broken superset.

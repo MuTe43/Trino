@@ -60,6 +60,20 @@ cd backend && ./mvnw -q test                              # backend tests
    `Africa/Tunis`.
 7. Controllers hold no logic. Controller -> Service -> Repository. DTOs are Java
    records in `dto/`, entities never cross the controller boundary.
+8. Every role-gated write endpoint needs BOTH a URL rule in
+   `ConfigurationSecurite.authorizeHttpRequests` AND `@PreAuthorize` on the
+   service method. Not one or the other.
+
+   `@Valid` on a request body runs during controller argument resolution,
+   before the AOP proxy behind `@PreAuthorize` is ever reached. So a forbidden
+   request carrying an invalid body returns 400 `VALIDATION_ECHOUEE` instead of
+   403 — the caller learns their payload was malformed on an endpoint they were
+   never allowed to touch. The URL rule runs in the filter chain, ahead of
+   validation, and produces the correct 403. The `@PreAuthorize` stays as
+   defence in depth for service-to-service calls.
+
+   This was found at runtime in phase 1; it is invisible to the compiler and to
+   any test that sends a valid body.
 
 ## Where to look
 

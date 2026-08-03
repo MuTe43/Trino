@@ -37,3 +37,25 @@ export interface ErreurApi {
   message: string;
   details?: { champ: string; probleme: string }[];
 }
+
+export type Role =
+  | "VOYAGEUR"
+  | "AGENT_CIRCULATION"
+  | "RESPONSABLE_EXPLOITATION"
+  | "ADMINISTRATEUR";
+
+/** Mirrors the `utilisateur` table / UtilisateurDTO. */
+export interface Utilisateur {
+  id: number;
+  email: string;
+  nom: string;
+  role: Role;
+  actif: boolean;
+}
+
+/** Response body of POST /auth/login and /auth/refresh. */
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  utilisateur: Utilisateur;
+}

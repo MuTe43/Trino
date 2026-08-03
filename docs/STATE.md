@@ -7,57 +7,70 @@ file. Keep it under 400 words. Debugging narrative goes to
 
 ## Current phase
 
-Phase 0 done and verified. Phase 1 next.
+Phase 1 done and runtime-verified. Phase 2 next — but blocked on the
+seed-data fix below.
 
 ## Done
 
-- **Phase 0** — `docker-compose.yml` (db only). Maven parent + `api` +
-  `simulateur` (placeholder). Spring Boot 3.4.1 app with entities, repos,
-  services and controllers for `Gare`, `Ligne`, `Desserte`, `Train`. Full CRUD
-  written, only GET wired to the frontend. `ApiExceptionHandler` implements the
-  error envelope with correct per-exception status mapping. Pagination clamped
-  in the service layer via `commun/PageableUtils` (page >= 0, taille 1-200).
-  `ligne.trace` stored as JSON string, parsed in `LigneService`. Next.js 15
-  scaffold with typed API wrapper and a gares list page. Acceptance script
-  passed 2026-08-03, re-run after review fixes.
+- **Phase 0** — Maven parent + `api` + `simulateur` (placeholder), db-only
+  compose. CRUD for `Gare`/`Ligne`/`Desserte`/`Train` (only GET wired to
+  frontend), error envelope, clamped pagination, `ligne.trace` as parsed
+  JSON. Next.js scaffold + gares list. Acceptance passed 2026-08-03.
+
+- **Phase 1** — JWT auth (`iam` + `securite`). Four load-bearing roles:
+  `VOYAGEUR`, `AGENT_CIRCULATION`, `RESPONSABLE_EXPLOITATION`,
+  `ADMINISTRATEUR` (phases 5/6 gate on these names). Access 30 min / refresh
+  7 days, HS256, no rotation, refresh tokens SHA-256-hashed, cookie `Path=/`.
+  Login logged via `JournalService`; inactive accounts rejected. Référentiel
+  writes gated both `@PreAuthorize` and at the URL level (`@Valid` runs
+  before `@PreAuthorize` otherwise), reads/SSE/`/actuator` public. 401/403
+  reuse `ErreurDTO`, UTF-8-safe everywhere. `UtilisateurController`
+  read-only. Frontend: `lib/auth.ts`, connexion page, `middleware.ts`. Nine
+  runtime-only bugs found across two passes (live testing, then a `reviewer`
+  subagent) and fixed — none visible from the code alone; full list in
+  `RAPPORT-NOTES.md` §3.
+
+  Verified live twice (db/api on 5432/8081, not the unrelated services on
+  8080): full acceptance script, a real browser login through to `/admin`
+  and logged-out redirect, non-rotating refresh, deactivated-account
+  rejection, SSE/actuator public access, logout requiring auth. API left
+  running on 8081.
+
+  **Demo logins** (password `Trino2026!`): `admin@sncft.tn`
+  (ADMINISTRATEUR), `agent@sncft.tn` (AGENT_CIRCULATION),
+  `responsable@sncft.tn` (RESPONSABLE_EXPLOITATION), `voyageur@sncft.tn`
+  (VOYAGEUR).
 
 ## Migrations applied
 
 `V1__referentiel.sql`, `V2__seed_reseau.sql` — 39 gares, 5 lignes, 46 dessertes,
-26 trains.
+26 trains. `V3__iam.sql` — `utilisateur`, `journal_connexion`, `refresh_token`
++ 4 seeded users. Applied and confirmed on the live dev DB.
 
 ## Blocking phase 2 — fix before `/phase-start 2`
 
-Seed data is internally inconsistent. The delay engine assumes `ordre` and
-`pk_km` ascend together; violations produce silently wrong punctuality figures.
-
-- L5 Métro du Sahel: `SKN` (Skanès) is ordered after `MON` (Monastir) but sits
-  before it — reversed stop order.
-- `BEK` and `TBL` share longitude `11.0342` — zero-length segment, breaks the
-  ETA divisor.
-- Several trains have `vitesse_max_kmh` above their line's (`TN103` 130 on a
-  120 line; `MS501`-`MS505` on a 90 line).
-
-Fix by editing `V2__seed_reseau.sql` directly and running
-`docker compose down -v` — V2 is unreleased seed data on a rebuildable local
-database, so a corrective migration would only clutter the history. Do NOT edit
-`V1`. Real SNCFT branch topology is explicitly out of scope: only internal
-consistency matters. Verification queries are in `docs/phases/phase-2.md`.
+Seed data inconsistent (`ordre`/`pk_km` must ascend together): L5's `SKN`
+ordered after `MON` but positioned before it; `BEK`/`TBL` share a longitude
+(zero-length segment); `TN103`/`MS501`-`MS505` exceed their line's
+`vitesse_max_kmh`. Fix directly in `V2__seed_reseau.sql` + `docker compose
+down -v` (don't edit `V1`, don't add a corrective migration). Verification
+queries: `docs/phases/phase-2.md`.
 
 ## Deferred
 
-- Query filters (`?region=`, `?q=`, `?type=`, `?ligneId=`) not implemented.
-  Add whenever a phase first needs a filtered list.
-- Host ports 5432 and 8080 are taken on the dev machine by unrelated services.
-  API runs locally on 8081 via override; `application.yml` stays 8080. Phase 7
-  compose must publish `8081:8080`.
+- Query filters (`?region=`, `?q=`, `?type=`, `?ligneId=`): add when first
+  needed.
+- Ports 5432/8080 taken by unrelated services; API runs on 8081 locally,
+  `application.yml` stays 8080. Phase 7 compose must publish `8081:8080`.
+- `refresh_token` has no expiry sweep or per-user cap; grows one row per
+  login/refresh. Fine for a demo, revisit if phase 7 needs cleanup.
 
 ## Open questions for the supervisor
 
-- Spec puts `Statut` on `Train`; we split `Train` / `Course`. Confirm.
+- Spec puts `Statut` on `Train`; we split `Train`/`Course`. Confirm.
 - Spec has no theoretical timetable entity; we added `Desserte`. Confirm.
-- Which notification channel is actually reachable during the internship?
-  Currently scoped to in-app only.
+- Which notification channel is reachable during the internship? Currently
+  in-app only.
 
 ## Deviations from the cahier des charges
 

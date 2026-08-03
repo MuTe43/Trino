@@ -1,6 +1,7 @@
 package tn.sncft.trino.referentiel.service;
 
 import org.springframework.data.domain.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tn.sncft.trino.commun.PageableUtils;
@@ -34,6 +35,7 @@ public class GareService {
         return versDTO(trouverEntiteParId(id));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public GareDTO creer(GareCreateDTO requete) {
         Gare gare = new Gare();
         appliquer(gare, requete.code(), requete.nom(), requete.region(), requete.latitude(),
@@ -41,6 +43,7 @@ public class GareService {
         return versDTO(gareRepository.save(gare));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public GareDTO mettreAJour(Long id, GareUpdateDTO requete) {
         Gare gare = trouverEntiteParId(id);
         appliquer(gare, requete.code(), requete.nom(), requete.region(), requete.latitude(),
@@ -48,6 +51,7 @@ public class GareService {
         return versDTO(gareRepository.save(gare));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Gare gare = trouverEntiteParId(id);
         gareRepository.delete(gare);

@@ -1,6 +1,20 @@
 # Phase 1 — Auth & rôles (1.5 days)
 
-Also read: `docs/architecture/api-contract.md` (Auth section).
+Also read: `docs/architecture/api-contract.md` (Auth section) and
+`docs/architecture/domain-model.md` (Role enum, `utilisateur` and
+`journal_connexion` tables).
+
+## The four roles — do not invent these
+
+```
+VOYAGEUR                    public, read-only
+AGENT_CIRCULATION           declares incidents, sets a course to ARRET_EXCEPTIONNEL or ANNULE
+RESPONSABLE_EXPLOITATION    all of the above, plus resolves incidents and sees every dashboard
+ADMINISTRATEUR              référentiel writes and user management
+```
+
+These names are load-bearing. Phase 5 and phase 6 gate on them by string, and
+the seeded demo accounts below use them. Any other naming breaks both.
 
 ## Goal
 

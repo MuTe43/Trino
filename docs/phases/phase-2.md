@@ -67,6 +67,13 @@ backend/simulateur/src/main/resources/application.yml
 The simulator holds all state in memory. It never touches the database — this
 is invariant 3 and the whole point of the phase.
 
+**The API base URL is configuration, never a literal.**
+`trino.api.base-url` in the simulator's `application.yml`, defaulting to
+`http://localhost:8080`, overridable by `TRINO_API_BASE_URL`. The dev machine
+runs the API on 8081 because 8080 is taken by an unrelated service — override
+it there, do not check 8081 into the repo. Phase 7's compose sets this to
+`http://api:8080` on the container network, and a hardcoded port breaks it.
+
 Tick every 5 seconds:
 1. Any course whose `departTheorique` has passed and is not yet started becomes
    active at km 0.

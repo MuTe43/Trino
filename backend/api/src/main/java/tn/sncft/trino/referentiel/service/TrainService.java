@@ -1,6 +1,7 @@
 package tn.sncft.trino.referentiel.service;
 
 import org.springframework.data.domain.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tn.sncft.trino.commun.PageableUtils;
@@ -40,6 +41,7 @@ public class TrainService {
         return versDTO(trouverEntiteParId(id));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public TrainDTO creer(TrainCreateDTO requete) {
         Train train = new Train();
         appliquer(train, requete.numero(), requete.nom(), requete.type(), requete.ligneId(),
@@ -47,6 +49,7 @@ public class TrainService {
         return versDTO(trainRepository.save(train));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public TrainDTO mettreAJour(Long id, TrainUpdateDTO requete) {
         Train train = trouverEntiteParId(id);
         appliquer(train, requete.numero(), requete.nom(), requete.type(), requete.ligneId(),
@@ -54,6 +57,7 @@ public class TrainService {
         return versDTO(trainRepository.save(train));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Train train = trouverEntiteParId(id);
         trainRepository.delete(train);

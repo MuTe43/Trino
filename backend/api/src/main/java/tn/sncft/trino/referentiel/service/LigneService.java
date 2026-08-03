@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tn.sncft.trino.commun.PageableUtils;
@@ -60,6 +61,7 @@ public class LigneService {
                 .toList();
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public LigneDTO creer(LigneCreateDTO requete) {
         Ligne ligne = new Ligne();
         appliquer(ligne, requete.code(), requete.nom(), requete.distanceKm(), requete.vitesseMaxKmh(),
@@ -67,6 +69,7 @@ public class LigneService {
         return versDTO(ligneRepository.save(ligne));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public LigneDTO mettreAJour(Long id, LigneUpdateDTO requete) {
         Ligne ligne = trouverEntiteParId(id);
         appliquer(ligne, requete.code(), requete.nom(), requete.distanceKm(), requete.vitesseMaxKmh(),
@@ -74,6 +77,7 @@ public class LigneService {
         return versDTO(ligneRepository.save(ligne));
     }
 
+    @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Ligne ligne = trouverEntiteParId(id);
         ligneRepository.delete(ligne);

@@ -27,3 +27,9 @@ management:
   endpoint:
     health:
       show-details: never
+
+trino:
+  jwt:
+    secret: ${TRINO_JWT_SECRET:changeme-dev-secret-not-for-production-use-only-32bytes-min}
+    access-expiration-minutes: 30
+    refresh-expiration-days: 7

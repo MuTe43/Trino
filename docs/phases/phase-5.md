@@ -1,6 +1,8 @@
 # Phase 5 — Tableaux de bord + exports (2 days)
 
-Also read: `docs/architecture/api-contract.md` (dashboard section).
+Also read: `docs/architecture/api-contract.md` (dashboard section) and
+`docs/architecture/domain-model.md` (Role enum — dashboards are gated on
+`RESPONSABLE_EXPLOITATION`).
 
 Your #2 priority.
 
