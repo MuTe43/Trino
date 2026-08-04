@@ -12,7 +12,6 @@ import tn.sncft.trino.circulation.domaine.Course;
 import tn.sncft.trino.circulation.domaine.Horaire;
 import tn.sncft.trino.circulation.domaine.PassageGare;
 import tn.sncft.trino.circulation.domaine.SensCourse;
-import tn.sncft.trino.circulation.domaine.StatutCourse;
 import tn.sncft.trino.circulation.repo.CourseRepository;
 import tn.sncft.trino.circulation.repo.HoraireRepository;
 import tn.sncft.trino.circulation.repo.PassageGareRepository;
@@ -164,7 +163,9 @@ public class GenerateurCourses {
             course.setSens(horaire.getSens());
             course.setDepartTheorique(departTheorique);
             course.setArriveeTheorique(departTheorique.plusMinutes(dureeMin));
-            course.setStatut(StatutCourse.A_QUAI);
+            // No setStatut here. MachineEtatCourse is the single writer of
+            // course.statut (phase 3); a new course starts A_QUAI from the
+            // field initialiser on Course and the column default in V4.
             course.setAvancementKm(BigDecimal.ZERO);
             courses.add(course);
 

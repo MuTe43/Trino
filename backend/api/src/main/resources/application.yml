@@ -4,6 +4,15 @@ server:
 spring:
   application:
     name: trino-api
+  task:
+    scheduling:
+      # Default is ONE thread for every @Scheduled bean. HubSse.battementCoeur
+      # writes synchronously to every emitter, and DetecteurSilence holds a
+      # transaction while it sweeps -- on a single thread one stalled SSE
+      # consumer would block the degradation safety net that decision 8 rests
+      # on, silently, while pinning a DB connection.
+      pool:
+        size: 4
   datasource:
     url: jdbc:postgresql://localhost:5432/trino
     username: trino

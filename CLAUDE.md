@@ -41,6 +41,10 @@ cd backend && ./mvnw -q -pl api spring-boot:run          # API on 8080
 cd backend && ./mvnw -q -pl simulateur spring-boot:run   # simulator
 cd frontend && npm run dev                                # web on 3000
 cd backend && ./mvnw -q test                              # backend tests
+
+Acceptance commands in the phase files assume port 8080. This dev machine runs
+the API on 8081 because 8080 is taken by an unrelated service — substitute at
+run time, never edit the phase file or `application.yml`.
 ```
 
 ## Invariants — violating any of these is a bug

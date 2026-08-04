@@ -72,6 +72,10 @@ public class ConfigurationSecurite {
                         .requestMatchers(HttpMethod.GET, "/api/v1/gares/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/lignes/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/trains/**").permitAll()
+                        // Circulation reads are anonymous for the same reason as the référentiel:
+                        // a passenger checking whether their train is late has no account. The
+                        // gares rule above already covers /gares/{id}/departs.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/courses/**", "/api/v1/recherche").permitAll()
                         // SSE channels are anonymous per api-contract.md (passenger portal, station
                         // boards). No controller exists for them yet, but the rule stands regardless
                         // of build order: don't let the anyRequest().authenticated() default catch them.

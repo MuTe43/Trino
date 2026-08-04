@@ -276,6 +276,98 @@ donnée du matériel, pas une forme de commodité.
 28,8 % avec au moins 5 minutes de retard (cible ~25 %), retards répartis sur
 toutes les tranches, rapport vitesse observée / vitesse nominale de 0,9993.
 
+### Phase 3 — moteur de retards, temps réel et diffusion
+
+La phase où le système cesse d'enregistrer pour se mettre à prédire. À chaque
+ping : résoudre les gares franchies, horodater les heures réelles, calculer et
+propager le retard, faire tourner la machine à états, publier un delta sur les
+canaux concernés.
+
+**Deux unités qu'il ne faut jamais diviser l'une par l'autre.** `avancement_km`
+et `pk_km` sont du chaînage ; la `vitesseKmh` portée par un ping est une vitesse
+sol, parce que c'est ce que remonte un équipement AVL. Diviser un écart de
+chaînage par une vitesse sol fausse la prédiction d'un facteur allant jusqu'à
+1,4 — sans erreur, sans plantage, et avec une heure d'arrivée parfaitement
+plausible. `CalculateurEta` dérive donc sa propre vitesse du chaînage, sur une
+fenêtre de six positions. La méthode s'appelle `vitesseChainageKmh` et non
+`vitesse` : le nom est là pour qu'une session ultérieure ne puisse pas y
+substituer distraitement la valeur du ping. Vérifié à l'exécution — 05:37:10 par
+le chaînage, là où les 200 km/h annoncés par le ping auraient donné ~05:31.
+
+**L'horloge du moteur est celle du flux.** Le simulateur porte une horloge
+accélérée : à x20, un ping est horodaté à des heures de l'heure murale. Comparer
+`derniere_position_at` à `now()` aurait déclaré silencieuse la journée entière.
+`HorlogeCirculation` ancre donc le temps sur le dernier ping observé, puis le
+fait avancer en secondes réelles entre deux pings ; à x1, c'est exactement
+l'horloge système. La seconde moitié compte autant que la première : une horloge
+figée sur le dernier ping ne peut jamais conclure que le flux se tait depuis 90
+secondes.
+
+**La transition que rien ne réveille.** Une course dont la rame ne se présente
+jamais ne reçoit aucun ping — aucun événement ne déclenche le moteur. Sans le
+second travail de `DetecteurSilence`, un départ de 14:00 s'affiche à l'heure sur
+le tableau pendant que le quai est vide. C'est la panne la plus visible pour un
+voyageur, et celle qu'un jury cherchera.
+
+**Défauts trouvés et corrigés :**
+
+1. **Les canaux de gare étaient quasi globaux.** « Les gares encore devant le
+   train » était codé `arrivee_reelle == null`. Or une gare d'origine n'a pas
+   d'heure d'arrivée théorique, donc jamais d'heure réelle : la condition restait
+   vraie toute la course, et chaque course publiait sur sa gare d'origine du
+   départ au terminus. Tunis Ville étant l'origine de la plupart des lignes,
+   `gare:1` devenait un canal quasi global — exactement ce que l'invariant 5
+   interdit. Remplacé par un test de chaînage (`pk_km >= avancement_km`).
+   Vérifié : la gare d'origine reçoit désormais 0 événement pour un train situé
+   52 km plus loin, contre un par ping auparavant.
+
+2. **Les deltas SSE étaient publiés à l'intérieur de la transaction.** Un
+   rollback postérieur laissait les abonnés avec un delta décrivant un état
+   jamais enregistré — et un client qui réagit en rechargeant l'instantané REST
+   lisait la ligne d'avant commit, en contradiction avec le delta qu'il venait
+   d'appliquer. Publication déplacée en `afterCommit`.
+
+3. **Un emitter en échec d'écriture était retiré mais jamais clôturé.** Avec un
+   timeout à 0, plus rien ne lui écrivait, donc le conteneur ne découvrait jamais
+   la connexion morte : requête et réponse Tomcat restaient épinglées pour la
+   durée du processus. C'est précisément le cas de la connexion à moitié fermée
+   que le retrait était censé traiter.
+
+4. **Un seul thread pour tous les `@Scheduled`.** La taille par défaut du pool
+   d'ordonnancement de Spring est de 1. Le battement de cœur SSE écrit
+   séquentiellement vers tous les abonnés, et `DetecteurSilence` tient une
+   transaction pendant son balayage : un seul consommateur SSE bloqué suffisait
+   à arrêter silencieusement le mécanisme de dégradation sur lequel repose toute
+   la décision 8, tout en gardant une connexion à la base ouverte.
+
+5. **Un train à quai disparaissait de son propre tableau de départs.**
+   `depart_estimee` était gelée dès l'horodatage de `arrivee_reelle`, alors que
+   la règle de gel du modèle de domaine ne concerne que `arrivee_estimee`. Le
+   tableau de départs filtrant sur `depart_estimee`, un train retenu à quai
+   franchissait sa propre estimation périmée et sortait de l'affichage.
+
+6. **`DetecteurSilence` ne se rattrapait pas.** Le retard propagé par le second
+   travail n'était jamais défait quand une course redevenait `A_QUAI` : le
+   tableau continuait d'annoncer un retard pour un train qui n'en avait plus.
+   Ajouté au passage l'isolement par course, pour qu'une course fautive ne fasse
+   pas échouer le balayage des 79 autres.
+
+**Un défaut de spécification, pas de code.** La commande d'acceptation
+`select count(*) from passage_gare where arrivee_estimee is null` attendait 0 et
+renvoyait 80 — soit exactement une gare d'origine par course. Une origine n'a pas
+d'heure d'arrivée théorique, et la contrainte `chk_passage_estimee_suit_theorique`
+impose alors l'absence d'estimée. La requête contredisait le modèle de domaine ;
+c'est la requête qui a été corrigée, pas le code. Écrire une commande
+d'acceptation qu'aucune implémentation correcte ne peut satisfaire est un piège à
+signaler plutôt qu'à contourner.
+
+**Résultat mesuré :** 49 tests verts (18 avant la phase). Sur une journée
+simulée à x20 — résorption vérifiée sur une course réelle à 17→15→13→11 minutes
+avec `marge_min` à 2, au lieu de 19 minutes traînées jusqu'au terminus ; mélange
+d'états atteint (`A_QUAI`, `EN_CIRCULATION`, `RETARDE`, `TERMINUS_ATTEINT`) ; 21
+courses passées `RETARDE` sans le moindre ping ; 10 courses basculées en
+`ARRET_EXCEPTIONNEL` environ 70 secondes après l'arrêt du flux.
+
 ---
 
 ## 4. Ce qui n'a pas été construit, et pourquoi

@@ -9,6 +9,22 @@ Your #1 priority. If everything after this is cut, the project still defends.
 The public-facing app: a live map of trains, search, a train detail page with
 its stop list and delays, and a station departure board in kiosk mode.
 
+## Before any frontend work — two small backend jobs
+
+Phase 4 is otherwise frontend-only; these two are the exception.
+
+1. **`DepartGareDTO`** for `/gares/{id}/departs` — see `api-contract.md`.
+   The endpoint currently returns `PassageDTO`, which carries no train number
+   and no destination, so the station board cannot be built from it.
+
+2. **Stop SSE disconnects logging as ERROR.** A client disconnect currently
+   routes through `ApiExceptionHandler`, logs a stack trace, then fails again
+   trying to write `ErreurDTO` as `text/event-stream`. A browser `EventSource`
+   disconnects on every navigation, so without this the log fills with false
+   alarms during exactly the phase where you need to read it. Handle
+   `AsyncRequestNotUsableException` / `ClientAbortException` in the emitter
+   path and drop them at DEBUG.
+
 ## Build
 
 ```
@@ -71,3 +87,9 @@ Then, manually, with the simulator at acceleration 20:
 - Chrome devtools at 375px: map and board both usable
 - Devtools Network: exactly one EventSource per open ligne channel, and it
   closes on navigation
+
+```bash
+# clients must not recompute expected times themselves
+grep -rn "retardMin +\|arriveeTheorique +\|addMinutes" frontend/src --include=*.tsx
+# expect no output — they read arriveeEstimee
+```

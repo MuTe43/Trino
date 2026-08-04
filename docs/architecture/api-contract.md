@@ -98,6 +98,24 @@ GET /recherche?q=                        unified: numéro, ligne, gare, destinat
 franchi stops and the estimated time for the rest — it never adds `retardMin`
 to a theoretical time itself.
 
+`DepartGareDTO` — returned by `/gares/{id}/departs`. A `PassageDTO` alone
+cannot render a station board: it carries times but no train identity, and a
+board without a train number and a destination is not a board.
+
+```json
+{
+  "courseId": 4821, "numeroTrain": "DR201", "nomTrain": "Le Sahel",
+  "type": "GRANDES_LIGNES", "destination": "Gabès", "quai": "2",
+  "departTheorique": "2026-08-03T14:37:00Z",
+  "departEstime":    "2026-08-03T14:46:00Z",
+  "departReel":      null,
+  "statut": "RETARDE", "retardMin": 9, "classeRetard": "R5"
+}
+```
+
+`destination` is the `gare` of the course's last `passage_gare`, resolved
+server-side — the board must not have to fetch the stop list per train.
+
 ## Circulation — live (SSE)
 
 ```

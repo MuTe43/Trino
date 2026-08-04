@@ -22,7 +22,9 @@ backend/api/.../circulation/evenement/{EvenementPosition,EvenementStatut,Eveneme
 backend/api/.../diffusion/HubSse.java
 backend/api/.../diffusion/web/StreamController.java
 backend/api/.../circulation/web/CourseController.java           REST reads + /recherche
+backend/api/.../circulation/domaine/ClasseRetard.java          enum + de(int), derived never stored
 backend/api/.../circulation/dto/{CourseResumeDTO,PassageDTO,PositionDTO}.java
+backend/api/.../circulation/web/DepartsController.java         GET /gares/{id}/departs
 backend/api/src/main/resources/db/migration/V5__index_circulation.sql
 ```
 
@@ -81,7 +83,7 @@ Walking the remaining stops in `ordre`, carrying the current delay:
 ```
 retard = retard_courant
 for passage in stops_ahead:
-    retard = max(0, retard - passage.desserte.marge_min)
+    retard = max(0, retard - passage.marge_min)   # on passage_gare, NOT desserte
     passage.retard_min      = retard
     passage.arrivee_estimee = passage.arrivee_theorique + retard
     passage.depart_estimee  = passage.depart_theorique  + retard
@@ -153,11 +155,12 @@ psql -h localhost -U trino -d trino -c \
 # ordre wherever marge_min > 0 — that is margin absorption working
 
 psql -h localhost -U trino -d trino -c \
-  "select count(*) from passage_gare where arrivee_estimee is null"   # expect 0
+  "select count(*) from passage_gare
+   where arrivee_theorique is not null and arrivee_estimee is null"   # expect 0
+# the qualifier is required: origins have no theoretical arrival, so they
+# correctly have no estimate. An unqualified check returns one row per course.
 
-# clients must not recompute expected times themselves
-grep -rn "retardMin +\|arriveeTheorique +\|addMinutes" frontend/src --include=*.tsx
-# expect no output — they read arriveeEstimee
+# (the equivalent frontend check lives in phase 4 — no frontend exists yet)
 
 # pre-departure delay: stop the simulator, let a departure slot pass, then
 psql -h localhost -U trino -d trino -c \

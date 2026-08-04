@@ -25,6 +25,7 @@ import tn.sncft.trino.referentiel.domaine.Train;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -33,6 +34,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -42,11 +44,11 @@ import java.util.stream.Collectors;
  * one implementation; real AVL hardware would be another, and nothing else in
  * the system knows which one is connected.
  *
- * <p>Scope is deliberately narrow: this writes {@code position_course} and
- * moves {@code course.avancement_km} / {@code derniere_position_at}. It does
- * NOT compute delays, revise estimates or change status -- that is the delay
- * engine in phase 3. Keeping that seam clean is the point; an ingestion path
- * that also decides a train is late is one that cannot be swapped out.
+ * <p>This records the ping and then drives the delay engine over it, in the
+ * order set out in phase-3.md: hot state, delay and propagation, state machine,
+ * ETA, publish. The arithmetic itself lives in {@link MoteurRetard},
+ * {@link MachineEtatCourse} and {@link CalculateurEta} rather than here, so the
+ * seam stays swappable -- what a producer sends is still just positions.
  */
 @Service
 public class IngestionService {
@@ -63,15 +65,33 @@ public class IngestionService {
     private final PassageGareRepository passageGareRepository;
     private final PositionCourseRepository positionCourseRepository;
     private final FabriqueGeometrie fabriqueGeometrie;
+    private final EtatCirculationStore etatStore;
+    private final MoteurRetard moteurRetard;
+    private final MachineEtatCourse machineEtatCourse;
+    private final CalculateurEta calculateurEta;
+    private final DiffuseurCirculation diffuseur;
+    private final HorlogeCirculation horloge;
 
     public IngestionService(CourseRepository courseRepository,
                             PassageGareRepository passageGareRepository,
                             PositionCourseRepository positionCourseRepository,
-                            FabriqueGeometrie fabriqueGeometrie) {
+                            FabriqueGeometrie fabriqueGeometrie,
+                            EtatCirculationStore etatStore,
+                            MoteurRetard moteurRetard,
+                            MachineEtatCourse machineEtatCourse,
+                            CalculateurEta calculateurEta,
+                            DiffuseurCirculation diffuseur,
+                            HorlogeCirculation horloge) {
         this.courseRepository = courseRepository;
         this.passageGareRepository = passageGareRepository;
         this.positionCourseRepository = positionCourseRepository;
         this.fabriqueGeometrie = fabriqueGeometrie;
+        this.etatStore = etatStore;
+        this.moteurRetard = moteurRetard;
+        this.machineEtatCourse = machineEtatCourse;
+        this.calculateurEta = calculateurEta;
+        this.diffuseur = diffuseur;
+        this.horloge = horloge;
     }
 
     /** The runs of the current service day that can still receive positions. */
@@ -161,12 +181,37 @@ public class IngestionService {
                     .sorted(Comparator.comparing(PingDTO::horodatage))
                     .toList();
 
+            // The engine runs per ping, not once per batch: a stop crossed
+            // between two pings must be stamped with the timestamp of the ping
+            // that crossed it, or every real time in a batch collapses onto the
+            // last one and the measured delays drift.
             BigDecimal dernierAvancement = null;
+            EtatCirculation etat = null;
+            OffsetDateTime dernierEta = null;
+            List<PassageGare> revises = new ArrayList<>();
+            boolean franchissement = false;
+
             for (PingDTO ping : ordonnes) {
                 double avancement = geometrie.projeter(
                         ping.latitude().doubleValue(), ping.longitude().doubleValue());
                 dernierAvancement = BigDecimal.valueOf(avancement).setScale(2, RoundingMode.HALF_UP);
-                aEnregistrer.add(versPosition(course, ping, dernierAvancement, passages));
+
+                horloge.observer(ping.horodatage());
+
+                // 1. hot state
+                etat = etatStore.mettreAJour(course.getId(), new FixPosition(
+                        ping.horodatage(), ping.latitude(), ping.longitude(),
+                        ping.vitesseKmh(), dernierAvancement));
+
+                // 2. real times, delay, forward propagation
+                MoteurRetard.ResultatRetard resultat =
+                        moteurRetard.traiter(course, passages, ping.horodatage(), dernierAvancement);
+                franchissement |= resultat.franchissement();
+                fusionnerRevises(revises, resultat.revises());
+
+                // 4. ETA, from a chainage speed -- never from ping.vitesseKmh
+                dernierEta = calculateurEta.pour(course, passages, etat);
+                aEnregistrer.add(versPosition(course, ping, dernierAvancement, passages, dernierEta));
             }
 
             // The batch may arrive out of order; the course carries the latest
@@ -176,8 +221,26 @@ public class IngestionService {
                     || dernier.horodatage().isAfter(course.getDernierePositionAt())) {
                 course.setAvancementKm(dernierAvancement);
                 course.setDernierePositionAt(dernier.horodatage());
-                aMettreAJour.add(course);
             }
+            aMettreAJour.add(course);
+
+            // 3. the state machine, once the course carries its latest ping --
+            // it reads derniere_position_at to decide whether the feed is live.
+            Optional<StatutCourse> change =
+                    machineEtatCourse.evaluer(course, passages, horloge.maintenant());
+
+            // 5. publish, once per course rather than once per ping: a batch of
+            // six fixes is one movement as far as a subscriber is concerned.
+            diffuseur.position(course, passages, etat.dernier(), dernierEta);
+            if (franchissement || !revises.isEmpty()) {
+                diffuseur.retard(course, passages, revises);
+            }
+            change.ifPresent(statut -> {
+                diffuseur.statut(course, passages, statut);
+                if (statut == StatutCourse.TERMINUS_ATTEINT) {
+                    etatStore.oublier(course.getId());
+                }
+            });
         }
 
         positionCourseRepository.saveAll(aEnregistrer);
@@ -185,8 +248,21 @@ public class IngestionService {
         return new ResultatIngestionDTO(aEnregistrer.size(), rejetes);
     }
 
+    /**
+     * Collects the stops revised across a batch without repeating one that
+     * moved on several pings. The entities are mutated in place, so holding the
+     * first reference already yields the final estimate.
+     */
+    private void fusionnerRevises(List<PassageGare> cible, List<PassageGare> nouveaux) {
+        for (PassageGare passage : nouveaux) {
+            if (!cible.contains(passage)) {
+                cible.add(passage);
+            }
+        }
+    }
+
     private PositionCourse versPosition(Course course, PingDTO ping, BigDecimal avancementKm,
-                                        List<PassageGare> passages) {
+                                        List<PassageGare> passages, OffsetDateTime etaSuivante) {
         PositionCourse position = new PositionCourse();
         position.setCourse(course);
         position.setHorodatage(ping.horodatage());
@@ -196,28 +272,18 @@ public class IngestionService {
         position.setAvancementKm(avancementKm);
         position.setGarePrecedente(garePrecedente(passages, avancementKm));
         position.setGareSuivante(gareSuivante(passages, avancementKm));
-        // eta_suivante stays null: ETA is speed-based and belongs to the delay
-        // engine (decision 6). Ingestion records, it does not predict.
+        position.setEtaSuivante(etaSuivante);
         return position;
     }
 
     private Gare garePrecedente(List<PassageGare> passages, BigDecimal avancementKm) {
-        Gare precedente = null;
-        for (PassageGare passage : passages) {
-            if (passage.getPkKm().compareTo(avancementKm) <= 0) {
-                precedente = passage.getGare();
-            }
-        }
-        return precedente;
+        PassageGare passage = CalculateurEta.arretPrecedent(passages, avancementKm);
+        return passage == null ? null : passage.getGare();
     }
 
     private Gare gareSuivante(List<PassageGare> passages, BigDecimal avancementKm) {
-        for (PassageGare passage : passages) {
-            if (passage.getPkKm().compareTo(avancementKm) > 0) {
-                return passage.getGare();
-            }
-        }
-        return null;
+        PassageGare passage = CalculateurEta.prochainArret(passages, avancementKm);
+        return passage == null ? null : passage.getGare();
     }
 
     private Map<Long, List<PassageGare>> chargerPassages(Collection<Long> courseIds) {
