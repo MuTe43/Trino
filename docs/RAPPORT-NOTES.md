@@ -87,6 +87,29 @@ Redis inutilisé dans le `docker-compose`.
 
 ## 3. Journal de débogage
 
+### Note méthodologique — à faire une fois, pas à chaque défaut
+
+Trois phases, une constante : la majorité des défauts n'étaient visibles ni à la
+compilation, ni au typecheck, ni à la lecture du code. Ils ne sont apparus qu'en
+exécutant réellement le système — script d'acceptation lancé pour de vrai,
+connexion menée dans un navigateur, journée simulée jouée jusqu'au bout — ou lors
+d'une passe de revue outillée confiée à un agent dédié disposant de son propre
+contexte.
+
+Deux exemples portent l'argument à eux seuls :
+- Le cookie de rafraîchissement scopé `Path=/api/v1/auth` (phase 1) : chaque
+  appel HTTP pris isolément était correct ; seul un vrai parcours de connexion
+  dans un navigateur révélait que le middleware Next.js ne recevait jamais le
+  cookie.
+- Le taux de perturbation calculé par tick et non par minute simulée (phase 2) :
+  la ponctualité dépendait silencieusement du facteur d'accélération. Le système
+  donnait donc un résultat différent selon la vitesse à laquelle on l'observait,
+  et le défaut était invisible à x1.
+
+C'est la démarche de validation qui mérite d'être défendue, pas la liste des
+correctifs. Le reste de cette section en est la matière brute.
+
+
 ### Phase 0 — fondations et référentiel
 
 Six défauts trouvés et corrigés, dont quatre par une passe de revue automatisée.
@@ -115,10 +138,6 @@ Six défauts trouvés et corrigés, dont quatre par une passe de revue automatis
    requête supplémentaire par arrêt.
 
 6. **Code mort supprimé.** Deux DTO d'écriture jamais référencés.
-
-*À noter dans le rapport : quatre de ces six défauts ont été trouvés par une
-passe de revue outillée plutôt qu'à l'exécution. C'est un argument méthodologique
-qui vaut d'être fait explicitement.*
 
 ### Phase 1 — auth & rôles
 
@@ -185,9 +204,7 @@ chance de refuser quoi que ce soit. Corrigé en dupliquant la règle de rôle
 dans `ConfigurationSecurite` (`authorizeHttpRequests`, au niveau URL, POST/PUT
 /DELETE sur `/gares`, `/lignes`, `/trains` → `ADMINISTRATEUR`), qui s'exécute
 dans la chaîne de filtres, avant la validation. Le `@PreAuthorize` sur les
-services reste en place en défense en profondeur. *Argument méthodologique à
-répéter comme pour la phase 0 : ce défaut n'était visible qu'à l'exécution,
-la compilation et le typecheck ne l'auraient jamais révélé.*
+services reste en place en défense en profondeur.
 
 **Le cookie de rafraîchissement invisible pour le middleware du frontend.**
 Trouvé en testant le vrai flux de connexion dans un navigateur (pas seulement
@@ -203,6 +220,61 @@ Corrigé en passant le `Path` du cookie à `/`. Sans un test réel dans un
 navigateur, ce défaut aurait été invisible : aucun test `curl` ni aucune
 compilation ne l'aurait révélé, puisque chaque appel HTTP pris isolément se
 comportait correctement.
+
+### Phase 2 — plan de transport, simulateur et ingestion
+
+C'est la phase qui matérialise la décision d'architecture centrale : le
+simulateur devient un processus séparé, sans base de données, qui ne parle à
+Trino que par HTTP.
+
+**Deux espaces de mesure distincts.** Le tracé polyligne d'une ligne est jusqu'à
+40 % plus long que sa `distance_km` déclarée : une polyligne suit les courbes,
+une distance commerciale non. `avancement_km` et `pk_km` sont donc exprimés en
+*chaînage* — la mesure commerciale — et les arrêts sont ancrés aux sommets du
+tracé. Confondre les deux espaces fausserait toute prédiction d'arrivée d'un
+facteur allant jusqu'à 1,4, sans jamais lever la moindre erreur.
+
+**`projeter()` : inverser une position GPS en chaînage.** Le contrat d'ingestion
+transporte des coordonnées, parce que c'est ce qu'émet un équipement AVL réel —
+jamais un point kilométrique. Il a donc fallu une opération qui projette une
+position sur le tracé pour en déduire l'avancement. C'est la conséquence directe
+et assumée d'avoir placé le producteur hors du système : on consomme la forme de
+donnée du matériel, pas une forme de commodité.
+
+**Défauts trouvés et corrigés :**
+
+1. **`GenerateurCourses` s'exécutait hors transaction.** `@Transactional` portait
+   sur une méthode appelée depuis la même classe : l'auto-invocation
+   court-circuite le proxy Spring, donc les deux `saveAll` validaient séparément.
+   Une panne entre les deux laissait des courses sans aucun arrêt, et
+   définitivement — le contrôle d'idempotence les considérant ensuite comme déjà
+   générées.
+
+2. **Cache de géométrie périmé.** Modifier un tracé laissait le flux sur
+   l'ancienne polyligne jusqu'au redémarrage. Corrigé par un événement
+   `LigneModifiee` et une éviction.
+
+3. **Une seule ligne sans tracé faisait échouer les 80 courses.**
+   `coursesDuJour` renvoyait 500 pour l'ensemble ; désormais la course fautive
+   est ignorée, symétriquement avec l'ingestion.
+
+4. **Le bruit de vitesse du simulateur n'était pas centré** (0,88–1,04, moyenne
+   0,96). Un déficit de 4 % à chaque tick rendait une vingtaine de courses
+   structurellement en retard avant la moindre perturbation : le retard mesuré
+   ne mesurait donc pas ce qu'on croyait.
+
+5. **Le taux de perturbation était calculé par tick, non par minute simulée.**
+   Voir la note méthodologique ci-dessus.
+
+6. **Deux horaires qu'aucun train ne pouvait tenir.** L1 Sousse→Msaken exigeait
+   120 km/h alors que le matériel affecté plafonne à 110 et 80 ; L3
+   Manouba→Oued Ellil exigeait 84 sur une ligne à 80. Recalés sur le train le
+   plus lent affecté à la ligne — pas sur la limite de la ligne, qui n'est pas la
+   contrainte réelle. `CoherenceSeedTest` vérifie désormais cette règle.
+
+**Résultat mesuré sur une journée simulée complète :** 73 courses terminées,
+28,8 % avec au moins 5 minutes de retard (cible ~25 %), retards répartis sur
+toutes les tranches, rapport vitesse observée / vitesse nominale de 0,9993.
 
 ---
 

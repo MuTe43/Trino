@@ -33,3 +33,7 @@ trino:
     secret: ${TRINO_JWT_SECRET:changeme-dev-secret-not-for-production-use-only-32bytes-min}
     access-expiration-minutes: 30
     refresh-expiration-days: 7
+  ingestion:
+    # Shared secret the position feed presents in X-Ingest-Key. The simulator
+    # is one holder of it today; real AVL hardware would be another.
+    cle: ${TRINO_INGEST_KEY:dev-key}

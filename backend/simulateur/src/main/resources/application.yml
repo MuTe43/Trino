@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: trino-simulateur
+  main:
+    banner-mode: off
+
+logging:
+  level:
+    tn.sncft.trino: INFO
+
+trino:
+  api:
+    # NEVER a literal anywhere in the code. Phase 7's compose sets this to
+    # http://api:8080 on the container network; the dev machine runs the API on
+    # 8081 because 8080 is taken, and overrides it with TRINO_API_BASE_URL.
+    base-url: ${TRINO_API_BASE_URL:http://localhost:8080}
+  ingestion:
+    cle: ${TRINO_INGEST_KEY:dev-key}
+  simulateur:
+    # Wall-clock seconds between ticks.
+    tick-secondes: 5
+    # Simulated seconds per real second. At 60.0 a full service day runs in
+    # 24 minutes -- what you want for the demo and for generating report data.
+    acceleration: ${TRINO_SIM_ACCELERATION:1.0}
+    # Local time the simulated day starts at. Empty means "start from the real
+    # current time", which is what you want at acceleration 1.0. When you
+    # accelerate, set this to just before the first departure so the whole day
+    # actually plays out.
+    heure-debut: ${TRINO_SIM_HEURE_DEBUT:}
+    # How often to re-read courses-du-jour, in ticks.
+    ticks-par-rechargement: 60
+    # Share of courses that pick up a delay-inducing perturbation. Enough that
+    # the dashboard is not empty, not so much that punctuality looks broken.
+    part-perturbee: 0.28

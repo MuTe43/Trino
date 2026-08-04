@@ -3,6 +3,7 @@ package tn.sncft.trino.referentiel.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import tn.sncft.trino.referentiel.dto.DesserteDTO;
 import tn.sncft.trino.referentiel.dto.LigneCreateDTO;
 import tn.sncft.trino.referentiel.dto.LigneDTO;
 import tn.sncft.trino.referentiel.dto.LigneUpdateDTO;
+import tn.sncft.trino.referentiel.evenement.LigneModifiee;
 import tn.sncft.trino.referentiel.repo.DesserteRepository;
 import tn.sncft.trino.referentiel.repo.LigneRepository;
 
@@ -33,12 +35,14 @@ public class LigneService {
     private final LigneRepository ligneRepository;
     private final DesserteRepository desserteRepository;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher publicateurEvenements;
 
     public LigneService(LigneRepository ligneRepository, DesserteRepository desserteRepository,
-                         ObjectMapper objectMapper) {
+                         ObjectMapper objectMapper, ApplicationEventPublisher publicateurEvenements) {
         this.ligneRepository = ligneRepository;
         this.desserteRepository = desserteRepository;
         this.objectMapper = objectMapper;
+        this.publicateurEvenements = publicateurEvenements;
     }
 
     @Transactional(readOnly = true)
@@ -74,13 +78,18 @@ public class LigneService {
         Ligne ligne = trouverEntiteParId(id);
         appliquer(ligne, requete.code(), requete.nom(), requete.distanceKm(), requete.vitesseMaxKmh(),
                 requete.tempsTheoriqueMin(), requete.trace(), requete.actif());
-        return versDTO(ligneRepository.save(ligne));
+        LigneDTO dto = versDTO(ligneRepository.save(ligne));
+        // The trace may have changed, and anything that pre-computed geometry
+        // from it is now holding a stale polyline.
+        publicateurEvenements.publishEvent(new LigneModifiee(id));
+        return dto;
     }
 
     @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Ligne ligne = trouverEntiteParId(id);
         ligneRepository.delete(ligne);
+        publicateurEvenements.publishEvent(new LigneModifiee(id));
     }
 
     private Ligne trouverEntiteParId(Long id) {

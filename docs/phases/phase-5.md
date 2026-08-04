@@ -40,6 +40,19 @@ JPQL will fight you.
 Add a covering index if any of these exceeds 500ms on your seeded data. Measure
 before adding it.
 
+## A single day is too noisy to headline
+
+Measured in phase 2: two runs of the same simulated day gave 28.8% and 23.3%
+of courses 5+ minutes late — about four courses of variance on 73, roughly
+±5 points. The perturbation model is stochastic, so this is expected, not a
+bug.
+
+Consequence: the daily KPI card is fine as an operational view, but the
+punctuality figure you *present* must come from a range. Default the dashboard
+date picker to the last 7 days, not to today, and label the daily card as one
+day's figure. Otherwise the headline number moves every time the demo is reset
+— including if a jury asks you to run it again.
+
 ## Charts
 
 Recharts. Three of them: a punctuality line over the selected range, a histogram

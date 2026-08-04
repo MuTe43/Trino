@@ -49,17 +49,37 @@ public class ApiExceptionHandler {
         return reponse(HttpStatus.NOT_FOUND, "INTROUVABLE", "Ressource introuvable.", List.of());
     }
 
+    /**
+     * Field errors are the whole story in practice: Spring reports a violation
+     * on a collection element as an indexed FieldError (`trace[0]`,
+     * `pings[0].latitude`), not as a global error, so `details[].champ` stays a
+     * real field path as the contract promises.
+     *
+     * <p>The fallback covers the one case that is not a field error: a
+     * class-level constraint, whose property path is empty. There are none
+     * today; without the fallback, adding one later would silently produce a
+     * 400 with no details at all.
+     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErreurDTO> gererValidation(MethodArgumentNotValidException ex) {
         List<ErreurDTO.DetailErreurDTO> details = ex.getBindingResult().getFieldErrors().stream()
                 .map(fe -> new ErreurDTO.DetailErreurDTO(fe.getField(), fe.getDefaultMessage()))
                 .toList();
+        if (details.isEmpty()) {
+            details = ex.getBindingResult().getGlobalErrors().stream()
+                    .map(oe -> new ErreurDTO.DetailErreurDTO(oe.getObjectName(), oe.getDefaultMessage()))
+                    .toList();
+        }
         return reponse(HttpStatus.BAD_REQUEST, "VALIDATION_ECHOUEE", "La requête est invalide.", details);
     }
 
     @ExceptionHandler({MethodArgumentTypeMismatchException.class, HttpMessageNotReadableException.class,
             IllegalArgumentException.class})
     public ResponseEntity<ErreurDTO> gererRequeteMalformee(Exception ex) {
+        // Client errors are not logged at WARN -- a caller sending rubbish is
+        // not an incident. But with no detail in the envelope either, a 400
+        // from this branch is otherwise undiagnosable from both ends.
+        log.debug("Requête malformée : {} - {}", ex.getClass().getName(), ex.getMessage());
         return reponse(HttpStatus.BAD_REQUEST, "VALIDATION_ECHOUEE", "La requête est invalide.", List.of());
     }
 

@@ -1,5 +1,6 @@
 package tn.sncft.trino.referentiel.service;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
@@ -10,6 +11,7 @@ import tn.sncft.trino.referentiel.domaine.Gare;
 import tn.sncft.trino.referentiel.dto.GareCreateDTO;
 import tn.sncft.trino.referentiel.dto.GareDTO;
 import tn.sncft.trino.referentiel.dto.GareUpdateDTO;
+import tn.sncft.trino.referentiel.evenement.GareModifiee;
 import tn.sncft.trino.referentiel.repo.GareRepository;
 
 /**
@@ -21,8 +23,11 @@ public class GareService {
 
     private final GareRepository gareRepository;
 
-    public GareService(GareRepository gareRepository) {
+    private final ApplicationEventPublisher publicateurEvenements;
+
+    public GareService(GareRepository gareRepository, ApplicationEventPublisher publicateurEvenements) {
         this.gareRepository = gareRepository;
+        this.publicateurEvenements = publicateurEvenements;
     }
 
     @Transactional(readOnly = true)
@@ -48,13 +53,18 @@ public class GareService {
         Gare gare = trouverEntiteParId(id);
         appliquer(gare, requete.code(), requete.nom(), requete.region(), requete.latitude(),
                 requete.longitude(), requete.nbQuais(), requete.responsable(), requete.actif());
-        return versDTO(gareRepository.save(gare));
+        GareDTO dto = versDTO(gareRepository.save(gare));
+        // The coordinates may have moved, and every line geometry serving this
+        // gare is anchored to them.
+        publicateurEvenements.publishEvent(new GareModifiee(id));
+        return dto;
     }
 
     @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Gare gare = trouverEntiteParId(id);
         gareRepository.delete(gare);
+        publicateurEvenements.publishEvent(new GareModifiee(id));
     }
 
     private Gare trouverEntiteParId(Long id) {

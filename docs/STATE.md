@@ -1,77 +1,116 @@
 # State
 
-Rewritten at the end of every phase. This is the handoff between sessions — the
-next session reads this and `CLAUDE.md`, nothing else, before opening its phase
-file. Keep it under 400 words. Debugging narrative goes to
-`docs/RAPPORT-NOTES.md`, not here.
+Handoff between sessions. The next session reads this and `CLAUDE.md`, nothing
+else, before opening its phase file. Keep it under 400 words. Debugging
+narrative goes to `docs/RAPPORT-NOTES.md`, not here.
 
 ## Current phase
 
-Phase 1 done and runtime-verified. Phase 2 next — but blocked on the
-seed-data fix below.
+Phase 2 done, reviewed twice and runtime-verified. Phase 3 next, no blockers.
 
 ## Done
 
-- **Phase 0** — Maven parent + `api` + `simulateur` (placeholder), db-only
-  compose. CRUD for `Gare`/`Ligne`/`Desserte`/`Train` (only GET wired to
-  frontend), error envelope, clamped pagination, `ligne.trace` as parsed
-  JSON. Next.js scaffold + gares list. Acceptance passed 2026-08-03.
+- **Phase 0** — référentiel CRUD, error envelope, clamped pagination, Next.js
+  scaffold.
+- **Phase 1** — JWT auth. Roles `VOYAGEUR`, `AGENT_CIRCULATION`,
+  `RESPONSABLE_EXPLOITATION`, `ADMINISTRATEUR`. Access 30 min / refresh 7 days,
+  no rotation. Writes gated by URL rule **and** `@PreAuthorize` (invariant 8).
+  Demo logins `admin@` / `agent@` / `responsable@` / `voyageur@sncft.tn`,
+  password `Trino2026!`.
+- **Phase 2** — `horaire` holds 80 standing slots; `GenerateurCourses`
+  materialises them at startup and daily at 03:00 into 80 courses / 683
+  `passage_gare`, idempotent on (train, date, départ).
+- RETOUR mirrors the stored desserte: `pk' = pkTotal - pk`, order reversed,
+  arrival/departure offsets swapped so dwell is preserved.
+- `GeometrieLigne` anchors each stop's `pk_km` to its gare's trace vertex;
+  `projeter()` inverts a GPS fix back to a chainage. No PostGIS.
+- `POST /ingest/positions` + `GET /ingest/courses-du-jour`, guarded by
+  `FiltreCleIngestion` (`X-Ingest-Key`), a URL rule and `@PreAuthorize`.
+- Simulator: separate headless process, HTTP client only, all state in memory,
+  configurable `acceleration`.
+- `ligne.trace` and gare coordinates are validated at the API boundary and
+  invalidate the geometry cache on change.
 
-- **Phase 1** — JWT auth (`iam` + `securite`). Four load-bearing roles:
-  `VOYAGEUR`, `AGENT_CIRCULATION`, `RESPONSABLE_EXPLOITATION`,
-  `ADMINISTRATEUR` (phases 5/6 gate on these names). Access 30 min / refresh
-  7 days, HS256, no rotation, refresh tokens SHA-256-hashed, cookie `Path=/`.
-  Login logged via `JournalService`; inactive accounts rejected. Référentiel
-  writes gated both `@PreAuthorize` and at the URL level (`@Valid` runs
-  before `@PreAuthorize` otherwise), reads/SSE/`/actuator` public. 401/403
-  reuse `ErreurDTO`, UTF-8-safe everywhere. `UtilisateurController`
-  read-only. Frontend: `lib/auth.ts`, connexion page, `middleware.ts`. Nine
-  runtime-only bugs found across two passes (live testing, then a `reviewer`
-  subagent) and fixed — none visible from the code alone; full list in
-  `RAPPORT-NOTES.md` §3.
+## Verified
 
-  Verified live twice (db/api on 5432/8081, not the unrelated services on
-  8080): full acceptance script, a real browser login through to `/admin`
-  and logged-out redirect, non-rotating refresh, deactivated-account
-  rejection, SSE/actuator public access, logout requiring auth. API left
-  running on 8081.
+Acceptance: `courses-du-jour` first course fully populated (15 dessertes, 43
+trace points); `position_course` 0 → 360 in 40 s; keyless POST → 401;
+`./mvnw test` **18 green**. Trains stop at **0.000 km** from the terminus gare.
+Full simulated day at x60: 73 finished, **23.3% ≥5 min late** (target ~25%),
+earliest arrival 2.4 min early, observed/nominal speed ratio 0.9993.
+`statut`/`retard_min`/`cause_retard` untouched by ingestion.
 
-  **Demo logins** (password `Trino2026!`): `admin@sncft.tn`
-  (ADMINISTRATEUR), `agent@sncft.tn` (AGENT_CIRCULATION),
-  `responsable@sncft.tn` (RESPONSABLE_EXPLOITATION), `voyageur@sncft.tn`
-  (VOYAGEUR).
+Two claims were proved rather than reasoned about. The `@Transactional` fix
+was checked with a runtime probe plus a **negative control** — removing the
+annotation makes `GenerateurCourses` log "hors transaction", restoring it
+silences it. Cache eviction was checked by warming the cache, PUTting a ligne,
+and confirming a Sousse ping still projects to exactly `pk 140.00`, `SOU→MSK`.
 
-## Migrations applied
+## Read this before phase 3
 
-`V1__referentiel.sql`, `V2__seed_reseau.sql` — 39 gares, 5 lignes, 46 dessertes,
-26 trains. `V3__iam.sql` — `utilisateur`, `journal_connexion`, `refresh_token`
-+ 4 seeded users. Applied and confirmed on the live dev DB.
+- **Chainage and ground speed are different units.** `avancement_km` and
+  `pk_km` are chainage; a trace polyline runs up to 40% longer than
+  `distance_km`. The `vitesseKmh` on a ping is a ground speed. Mixing them
+  corrupts every ETA silently.
+- `passage_gare` carries its own `pk_km` and `marge_min`. Do not re-join
+  `desserte` on the hot path — RETOUR mirrors both.
+- `eta_suivante` is deliberately null. `MachineEtatCourse`, `DetecteurSilence`
+  and `EtatCirculationStore` do not exist yet. Ingestion records, never predicts.
+- Restarting the simulator restarts departed runs from km 0, so they read as
+  very late until they catch up.
+- `GenerateurCourses.genererPour` asserts it is inside a transaction and logs
+  an ERROR if not. If you refactor its callers, watch for that line.
 
-## Blocking phase 2 — fix before `/phase-start 2`
+## Standing deviations
 
-Seed data inconsistent (`ordre`/`pk_km` must ascend together): L5's `SKN`
-ordered after `MON` but positioned before it; `BEK`/`TBL` share a longitude
-(zero-length segment); `TN103`/`MS501`-`MS505` exceed their line's
-`vitesse_max_kmh`. Fix directly in `V2__seed_reseau.sql` + `docker compose
-down -v` (don't edit `V1`, don't add a corrective migration). Verification
-queries: `docs/phases/phase-2.md`.
+| Deviation | Why |
+|---|---|
+| `V2` edited in place | Authorised by `phase-2.md`; unreleased seed on a rebuildable DB. **Not a precedent.** |
+| `GeometrieLigne.projeter()` added | AVL reports coordinates, never chainage |
+| Simulator speed from the timetable, not `vitesse_max_kmh` | At line max every train arrives ~80 min early |
+| `GeometrieCourse` duplicates the anchoring maths | The HTTP contract is the only intended coupling (decision 2); parity test due in phase 7 |
+| Seed geometry internally consistent, not surveyed | Real topology out of scope per `phase-2.md` |
+| Seed checks in `CoherenceSeedTest`, not `GeometrieLigneTest` | They need a live DB; `GeometrieLigneTest` stays a pure unit test |
+| `DesserteService` returns JPA entities to `circulation` | Decision 1 satisfied (service, not repository); a `DesserteVueDTO` would close it properly — **new, unresolved** |
+| Idempotency is read-then-insert, not `ON CONFLICT DO NOTHING` | `genererPour` is `synchronized`, which covers the single instance this deploys as; a second process would still need it — **new** |
 
 ## Deferred
 
-- Query filters (`?region=`, `?q=`, `?type=`, `?ligneId=`): add when first
-  needed.
-- Ports 5432/8080 taken by unrelated services; API runs on 8081 locally,
-  `application.yml` stays 8080. Phase 7 compose must publish `8081:8080`.
-- `refresh_token` has no expiry sweep or per-user cap; grows one row per
-  login/refresh. Fine for a demo, revisit if phase 7 needs cleanup.
+- **Phase 3**: `MachineEtatCourse`, `DetecteurSilence`, `eta_suivante`,
+  `EtatCirculationStore`.
+- **Phase 7**: compose publishes `8081:8080`; `position_course` growth
+  unbounded; `refresh_token` expiry sweep; `GeometrieLigne`/`GeometrieCourse`
+  parity assertion; `FiltreJwt`/`FiltreCleIngestion` are bare `Filter` beans so
+  Boot also auto-registers them in the container chain (harmless today,
+  `OncePerRequestFilter` masks it; `FilterRegistrationBean.setEnabled(false)`
+  is the containment).
+- **Unscheduled**: `/ingest/*` rate limit; référentiel query filters;
+  `CoherenceSeedTest` skips when no DB unless `TRINO_DB_REQUIS=1`, which
+  nothing sets.
+- `phase-2.md`'s `DataSource` grep must exclude `target/`;
+  `spring-boot-autoconfigure` lists `DataSourceAutoConfiguration` as a string
+  in every Boot fat jar. Source and dependency trees are both clean.
+
+## Correction to an earlier entry
+
+A previous version of this file claimed `ApiExceptionHandler` was dropping
+validation details for collection elements, "affecting every endpoint". **That
+was wrong.** Spring already reports element violations as indexed
+`FieldError`s (`trace[0]`, `pings[0].latitude`) — verified live. The original
+empty `details` came from a malformed test payload hitting
+`HttpMessageNotReadableException`, not from the handler. The handler now uses
+`getFieldErrors()` with a fallback to global errors, which only matters if a
+class-level constraint is ever added.
 
 ## Open questions for the supervisor
 
 - Spec puts `Statut` on `Train`; we split `Train`/`Course`. Confirm.
 - Spec has no theoretical timetable entity; we added `Desserte`. Confirm.
-- Which notification channel is reachable during the internship? Currently
-  in-app only.
+- Seed geometry is internally consistent, not surveyed. Confirm acceptable.
+- Which notification channel is reachable during the internship?
 
-## Deviations from the cahier des charges
+## Running now
 
-Maintained in `docs/RAPPORT-NOTES.md` section 4.
+API on 8081; 80 courses for 2026-08-04 with positions from an accelerated run.
+Simulator stopped. Start it with
+`TRINO_API_BASE_URL=http://localhost:8081 ./mvnw -pl simulateur spring-boot:run`.

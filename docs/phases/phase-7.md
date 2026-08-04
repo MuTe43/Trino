@@ -29,6 +29,11 @@ Do not chase coverage. Four things are worth testing and the rest is not:
 2. The state machine — every transition in the domain model doc, including the
    silence timeout.
 3. Polyline interpolation — an off-by-one here puts trains in the sea.
+   Add a parity assertion between `GeometrieLigne` (api) and `GeometrieCourse`
+   (simulateur): same trace, same stops, identical chainage. The duplication is
+   deliberate — the HTTP contract is the only intended coupling — but nothing
+   currently stops the two implementations from drifting, and when they do,
+   trains render off-track with no error anywhere.
 4. One integration test: POST a ping, assert the passage is stamped, the delay
    is right, and an SSE event fires.
 

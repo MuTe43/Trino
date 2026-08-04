@@ -2,6 +2,7 @@ package tn.sncft.trino.securite;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -55,7 +56,13 @@ public class ConfigurationSecurite {
     }
 
     @Bean
-    public SecurityFilterChain chaineFiltres(HttpSecurity http, FiltreJwt filtreJwt) throws Exception {
+    public FiltreCleIngestion filtreCleIngestion(@Value("${trino.ingestion.cle}") String cleIngestion) {
+        return new FiltreCleIngestion(cleIngestion, objectMapper);
+    }
+
+    @Bean
+    public SecurityFilterChain chaineFiltres(HttpSecurity http, FiltreJwt filtreJwt,
+                                             FiltreCleIngestion filtreCleIngestion) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(sourceCors()))
@@ -70,6 +77,11 @@ public class ConfigurationSecurite {
                         // of build order: don't let the anyRequest().authenticated() default catch them.
                         .requestMatchers(HttpMethod.GET, "/api/v1/stream/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
+                        // The position feed authenticates with X-Ingest-Key, checked by
+                        // FiltreCleIngestion ahead of this rule. The rule stays so the
+                        // endpoints are never reachable anonymously if the filter is ever
+                        // unregistered -- same belt-and-braces as the référentiel writes.
+                        .requestMatchers("/api/v1/ingest/**").hasRole("INGESTION")
                         // Enforced here too (not just @PreAuthorize on the services): otherwise
                         // @Valid on the request body runs during controller argument resolution,
                         // before the service (and its @PreAuthorize) is ever called, and an
@@ -84,7 +96,8 @@ public class ConfigurationSecurite {
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(pointEntreeAuthentification())
                         .accessDeniedHandler(gestionnaireAccesRefuse()))
-                .addFilterBefore(filtreJwt, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(filtreJwt, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(filtreCleIngestion, FiltreJwt.class);
         return http.build();
     }
 

@@ -42,10 +42,37 @@ On each ping in `IngestionService`:
    - update `course.retard_min`
 3. `MachineEtatCourse.evaluer(course)` — the ONLY place `course.statut` is
    assigned. Transitions are in the domain model doc.
-4. `CalculateurEta.pour(course)` — `(pk_suivante - avancement) / vitesse_moyenne`
-   over the last 6 pings, floored at the theoretical arrival.
+4. `CalculateurEta.pour(course)` — `(pk_suivante - avancement) / vitesse_chainage`,
+   floored at the theoretical arrival. **Read the unit warning below before
+   writing this.**
 5. Publish. `HubSse` fans out to the ligne channel and to the channels of the
    gares still ahead on this course.
+
+### Units — the one that will silently corrupt every ETA
+
+`avancement_km` and `pk_km` are **chainage**, measured against the line's
+`distance_km`. The trace polyline is a different length — up to 40% longer on
+some lines, per phase 2. The `vitesseKmh` carried on a ping is a **ground
+speed**, because that is what AVL hardware reports.
+
+Those are two different units. Dividing a chainage delta by a ground speed
+gives an ETA wrong by a per-line factor of up to 1.4.
+
+So `CalculateurEta` derives its own speed from chainage, never from the ping:
+
+```
+vitesse_chainage = (avancement[n] - avancement[n-k]) / (horodatage[n] - horodatage[n-k])
+```
+
+with k = 6 pings, falling back to the theoretical segment pace when fewer than
+two pings exist. The reported `vitesseKmh` is passed through to the UI for
+display and used nowhere in arithmetic.
+
+This will not crash, and it will not look wrong. A train showing 14:44 instead
+of 14:38 is entirely plausible, and the error only surfaces in phase 5 as
+punctuality figures that are quietly a few points off. Write the unit into the
+method name — `vitesseChainageKmh`, not `vitesse` — so a later session cannot
+absent-mindedly substitute the ping value.
 
 ### Propagation with margin absorption
 

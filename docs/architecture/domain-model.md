@@ -38,6 +38,15 @@ Flag both of these to the supervisor in writing.
 `trace` is the polyline the simulator interpolates along. 20-60 points per line
 is plenty. No PostGIS.
 
+`distance_km` and the length of `trace` are two different scales and must not
+be conflated. `distance_km` is the rail chainage the timetable is written
+against; the trace is a drawn approximation that runs up to 40% longer. The
+trace is generated so it passes exactly through every stop of the ligne's
+desserte, in `ordre`, which is what lets `GeometrieLigne` anchor each stop's
+`pk_km` to a trace vertex and interpolate proportionally between anchors.
+Walking `pk` km along the raw polyline instead puts a train tens of kilometres
+from the station it is standing in, and nothing crashes — the map just lies.
+
 **desserte** — the theoretical stop pattern. This is the missing entity.
 `id` bigserial PK · `ligne_id` FK · `gare_id` FK · `ordre` smallint ·
 `pk_km` numeric(7,2) (distance from line origin) ·
@@ -67,11 +76,34 @@ index on (`date_service`,`statut`), (`ligne_id`,`date_service`)
 
 **passage_gare**
 `id` bigserial PK · `course_id` FK · `gare_id` FK · `ordre` smallint ·
+`pk_km` numeric(7,2) · `marge_min` smallint default 0 ·
 `arrivee_theorique` timestamptz · `depart_theorique` timestamptz ·
 `arrivee_reelle` timestamptz null · `depart_reelle` timestamptz null ·
 `arrivee_estimee` timestamptz · `depart_estimee` timestamptz ·
 `quai` varchar(10) null · `retard_min` int default 0
 unique (`course_id`,`ordre`)
+
+`pk_km` and `marge_min` are copied from `desserte` when the course is
+generated, not joined on read. A RETOUR course walks the desserte mirrored
+(`pk' = pkTotal - pk`, order reversed, arrival and departure offsets swapped
+so dwell is preserved), so both values differ per `sens`. Recomputing that
+mirror on every position ping — the hot path for the ETA — would put a join
+and a direction branch in the one place that has to stay simple.
+
+Arrival columns are null at the origin and departure columns at the terminus:
+a train does not arrive at where it starts. "Estimates are never null" means
+wherever a theoretical time exists, its estimate exists too; a check
+constraint enforces the pairing.
+
+**horaire** — the standing departure slots the daily timetable is generated
+from. Added in V4.
+`id` bigserial PK · `ligne_id` FK · `train_id` FK · `sens` enum SensCourse ·
+`heure_depart` time · `actif` boolean
+unique (`train_id`,`heure_depart`)
+
+`heure_depart` is deliberately a wall-clock `time`, not a timestamptz: a
+timetable says "the 06:00", not "the 05:00Z". `GenerateurCourses` resolves it
+against `Africa/Tunis` per service date.
 
 ### The three times — spec section 4.5
 

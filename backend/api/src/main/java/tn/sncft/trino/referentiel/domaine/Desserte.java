@@ -45,6 +45,15 @@ public class Desserte {
     @Column(name = "offset_depart_min")
     private Short offsetDepartMin;
 
+    /**
+     * Schedule slack built into the segment arriving at this stop -- what lets
+     * a late train make time back instead of carrying the same delay all the
+     * way to the terminus. Zero on the first stop, which has no arriving
+     * segment. Added in V4.
+     */
+    @Column(name = "marge_min", nullable = false)
+    private Short margeMin = 0;
+
     public Long getId() {
         return id;
     }
@@ -99,5 +108,13 @@ public class Desserte {
 
     public void setOffsetDepartMin(Short offsetDepartMin) {
         this.offsetDepartMin = offsetDepartMin;
+    }
+
+    public Short getMargeMin() {
+        return margeMin;
+    }
+
+    public void setMargeMin(Short margeMin) {
+        this.margeMin = margeMin;
     }
 }

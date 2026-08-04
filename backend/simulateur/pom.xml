@@ -15,12 +15,29 @@
     <packaging>jar</packaging>
 
     <name>Trino Simulateur</name>
-    <description>GPS feed producer - placeholder module, logic added in a future phase</description>
+    <description>GPS feed producer - separate process, HTTP client only, no database</description>
 
+    <!--
+      Deliberately minimal. This module stands in for AVL hardware, so it gets
+      an HTTP client and nothing else: no persistence, no connection pool, no
+      web server (the api module is the only one in this project). Adding
+      persistence here would let the simulator write state the real hardware
+      could never write, and the swap stops being a configuration change.
+    -->
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+        <!-- RestClient, without dragging in a servlet container. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+        <!-- Jackson plus the JSR-310 module, for OffsetDateTime payloads. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-json</artifactId>
         </dependency>
     </dependencies>
 
