@@ -41,11 +41,11 @@ cd backend && ./mvnw -q -pl api spring-boot:run          # API on 8080
 cd backend && ./mvnw -q -pl simulateur spring-boot:run   # simulator
 cd frontend && npm run dev                                # web on 3000
 cd backend && ./mvnw -q test                              # backend tests
+```
 
 Acceptance commands in the phase files assume port 8080. This dev machine runs
 the API on 8081 because 8080 is taken by an unrelated service — substitute at
 run time, never edit the phase file or `application.yml`.
-```
 
 ## Invariants — violating any of these is a bug
 
@@ -64,7 +64,14 @@ run time, never edit the phase file or `application.yml`.
    `Africa/Tunis`.
 7. Controllers hold no logic. Controller -> Service -> Repository. DTOs are Java
    records in `dto/`, entities never cross the controller boundary.
-8. Every role-gated write endpoint needs BOTH a URL rule in
+8. Tailwind class names must appear as complete literal strings in source.
+   Tailwind 4 only generates a utility whose name it can see, so a class
+   assembled at runtime (`` `text-${statut}` ``) is never emitted — the code
+   compiles, lints and builds green, and the style simply does not exist. This
+   cost nine of ten status colours in phase 4. Use a lookup table with every
+   class spelled out. Highest risk anywhere a status, a delay bucket, or a
+   chart series maps to a colour.
+9. Every role-gated write endpoint needs BOTH a URL rule in
    `ConfigurationSecurite.authorizeHttpRequests` AND `@PreAuthorize` on the
    service method. Not one or the other.
 

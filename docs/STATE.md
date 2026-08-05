@@ -13,7 +13,7 @@ Phase 4 done, reviewed. Phase 5 next. One acceptance item unverified — see
 
 - **Phase 0** — référentiel CRUD, error envelope, clamped pagination, Next.js scaffold.
 - **Phase 1** — JWT auth, four roles, writes gated by a URL rule **and**
-  `@PreAuthorize` (invariant 8). Demo logins `admin@` / `agent@` /
+  `@PreAuthorize` (invariant 9). Demo logins `admin@` / `agent@` /
   `responsable@` / `voyageur@sncft.tn`, password `Trino2026!`.
 - **Phase 2** — `horaire` materialises 80 courses / 683 `passage_gare` daily;
   `GeometrieLigne` anchors each stop's `pk_km`; `/ingest/*` behind `X-Ingest-Key`.
@@ -79,9 +79,12 @@ phase's only migration: backfills `passage_gare.quai` for rows generated before
 
 ## Carry to phase 5
 
+- `phase-5.md` now opens with two items pulled forward out of phases 7 and 6:
+  multiplex the SSE connections onto one emitter per client, and restyle
+  `/connexion`. Neither is resolved — both are specified there, not here.
 - **Unverified: "exactly one EventSource per open ligne channel, closes on
-  navigation."** Must be measured in a real Chrome window against
-  `npm run start` — the embedded browser reports `document.hidden` as
+  navigation."** Measure it before the multiplexing work above, in a real
+  Chrome window against `npm run start` — the embedded browser reports `document.hidden` as
   permanently true and stops compositing, so MapLibre never renders and the
   count is meaningless there. Same reason the 3-minute movement run and the
   kill/restart-simulator transitions were not re-run end to end.
@@ -90,16 +93,10 @@ phase's only migration: backfills `passage_gare.quai` for rows generated before
 
 ## Deferred
 
-- **Phase 7**: SSE needs ~1 socket per ligne and a browser allows ~6 per origin
-  over HTTP/1.1, shared with REST — viewport filtering bounds this only when
-  zoomed in, not at full-network zoom. Needs h2 (so TLS) or a rethink that keeps
-  invariant 5. Also: `EtatCirculationStore` evicted only on `TERMINUS_ATTEINT`;
+- **Phase 7**: `EtatCirculationStore` evicted only on `TERMINUS_ATTEINT`;
   compose publishes `8081:8080`; `position_course` growth unbounded;
   `refresh_token` sweep; `FiltreJwt`/`FiltreCleIngestion` double-registered;
   `.gitignore` does not cover `*.log`.
-- **Phase 6**: `/connexion` is now the one screen contradicting phase 4's design
-  direction (centred card, `bg-blue-600`, `font-semibold` at a weight the app
-  does not load).
 - **Unscheduled**: `/ingest/*` rate limit; référentiel query filters;
   `TableauDepartsGare` has no periodic REST resync (only the kiosk does);
   `EtatFluxSse`/`useEtatFluxSse` exported but unused.

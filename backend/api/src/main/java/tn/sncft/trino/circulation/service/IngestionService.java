@@ -126,7 +126,7 @@ public class IngestionService {
      * Records a batch of positions. One {@code saveAll} for the whole batch,
      * not one insert per ping.
      */
-    // Invariant 8: the URL rule in ConfigurationSecurite is what produces the
+    // Invariant 9: the URL rule in ConfigurationSecurite is what produces the
     // correct 401/403 (it runs before @Valid), and this is the defence in
     // depth for service-to-service calls. Both, never one or the other.
     @PreAuthorize("hasRole('INGESTION')")
