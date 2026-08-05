@@ -38,7 +38,7 @@ public class CourseController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
             @RequestParam(required = false) Long ligneId,
             @RequestParam(required = false) Long gareId,
-            @RequestParam(required = false) StatutCourse statut,
+            @RequestParam(required = false) List<StatutCourse> statut,
             @RequestParam(required = false) TypeTrain type,
             @RequestParam(required = false) String q,
             @RequestParam(defaultValue = "0") int page,

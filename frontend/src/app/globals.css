@@ -1,26 +1,107 @@
 @import "tailwindcss";
 
+/*
+ * Trino design tokens.
+ *
+ * The station board (dark) and everything else (light, on --papier) share the
+ * same chrome but never the same status colours: the light-mode status hexes
+ * fail contrast on the board's dark ground, so each status has a distinct
+ * "-sombre" variant reserved for the board. Never reuse a light value there.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Chrome */
+  --sncft-bleu: #1D2B7D;
+  --encre: #0B1020;
+  --ardoise-700: #2A3566;
+  --ardoise-400: #6B7CB8;
+  --ardoise-200: #8FA0D8;
+  --papier: #F7F8FB;
+
+  /* Status ramp -- light mode. R5 and R10 share a hex; R15 and R30 share a
+   * hex, so the token is named after the pair, not either member alone. */
+  --statut-a-lheure: #1E9E5A;
+  --statut-r10: #C77E0A;
+  --statut-r30: #D2691E;
+  --statut-r60: #C43F36;
+  --statut-annule: #6B7280;
+
+  /* Status ramp -- dark mode, board only */
+  --statut-a-lheure-sombre: #4ADE80;
+  --statut-r10-sombre: #F5B942;
+  --statut-r30-sombre: #F2833C;
+  --statut-r60-sombre: #E8564C;
+  --statut-annule-sombre: #5A6699;
+
+  /* Hairlines. Surfaces separate by border and tone, never by shadow. */
+  --filet: #E2E6F0;
+  --filet-sombre: #1B2447;
+
+  /* Radii. The board uses 0 -- set that per-component, not here. */
+  --rayon-controle: 2px;
+  --rayon-carte: 8px;
 }
 
+/*
+ * Tailwind 4 token bridge: every custom property below becomes a utility
+ * (bg-papier, text-encre, border-filet, text-statut-r30, rounded-carte, ...).
+ * `--police-ui` / `--police-condensee` are set on <html> by layout.tsx via
+ * next/font variable classes, not declared here.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-sncft-bleu: var(--sncft-bleu);
+  --color-encre: var(--encre);
+  --color-ardoise-700: var(--ardoise-700);
+  --color-ardoise-400: var(--ardoise-400);
+  --color-ardoise-200: var(--ardoise-200);
+  --color-papier: var(--papier);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-statut-a-lheure: var(--statut-a-lheure);
+  --color-statut-a-lheure-sombre: var(--statut-a-lheure-sombre);
+  --color-statut-r10: var(--statut-r10);
+  --color-statut-r10-sombre: var(--statut-r10-sombre);
+  --color-statut-r30: var(--statut-r30);
+  --color-statut-r30-sombre: var(--statut-r30-sombre);
+  --color-statut-r60: var(--statut-r60);
+  --color-statut-r60-sombre: var(--statut-r60-sombre);
+  --color-statut-annule: var(--statut-annule);
+  --color-statut-annule-sombre: var(--statut-annule-sombre);
+
+  --color-filet: var(--filet);
+  --color-filet-sombre: var(--filet-sombre);
+
+  --radius-controle: var(--rayon-controle);
+  --radius-carte: var(--rayon-carte);
+
+  --font-ui: var(--police-ui);
+  --font-condensee: var(--police-condensee);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--papier);
+  color: var(--encre);
+  font-family: var(--police-ui);
+}
+
+/* Tabular figures for times, delays and platform numbers, so digits do not
+ * jitter sideways as SSE deltas update them in place. */
+.chiffres {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visible keyboard focus ring, built from the chrome blue. This is the only
+ * focus treatment in the app -- no default browser outline elsewhere. */
+:focus-visible {
+  outline: 2px solid var(--sncft-bleu);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

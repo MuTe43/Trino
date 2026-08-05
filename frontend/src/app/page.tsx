@@ -1,66 +1,26 @@
-import { apiGet, ApiError } from "@/lib/api";
-import type { Gare, PageDTO } from "@/lib/types";
+import { BarreRecherche } from "@/components/BarreRecherche";
+import { CarteReseau } from "@/components/CarteReseau";
 
-// Phase 0 placeholder: proves the Next.js app can reach the Spring Boot API.
-// This whole page is replaced by the real map view in a later phase.
-// Forced dynamic so the fetch happens per-request, not at build time (the
-// backend is not necessarily up when `next build` runs).
-export const dynamic = "force-dynamic";
-
-async function chargerGares(): Promise<
-  { ok: true; gares: Gare[] } | { ok: false; message: string }
-> {
-  try {
-    const page = await apiGet<PageDTO<Gare>>("/gares?taille=200");
-    return { ok: true, gares: page.contenu };
-  } catch (erreur) {
-    const message =
-      erreur instanceof ApiError
-        ? erreur.message
-        : "Erreur inconnue lors de la récupération des gares.";
-    return { ok: false, message };
-  }
-}
-
-export default async function Accueil() {
-  const resultat = await chargerGares();
-
+// The map is the page: full-bleed, no hero, no marketing, no centred card.
+// CarteReseau owns its own snapshot fetch (lignes, gares, day's running and
+// delayed courses) and its own live channels -- this Server Component is
+// only the shell around it.
+export default function Accueil() {
   return (
-    <main className="min-h-screen p-6 sm:p-10">
-      <h1 className="text-2xl font-semibold">Gares du réseau SNCFT</h1>
+    <main className="flex h-screen flex-col overflow-hidden">
+      <header className="flex h-12 shrink-0 items-center border-b border-filet bg-sncft-bleu px-4">
+        <p className="font-condensee text-base font-medium text-papier">Trino</p>
+      </header>
 
-      {!resultat.ok && (
-        <p className="mt-6 rounded border border-red-300 bg-red-50 p-4 text-red-800">
-          Impossible de charger les gares : {resultat.message}
-        </p>
-      )}
+      <div className="relative flex-1">
+        <CarteReseau />
 
-      {resultat.ok && resultat.gares.length === 0 && (
-        <p className="mt-6 text-gray-600">Aucune gare enregistrée.</p>
-      )}
-
-      {resultat.ok && resultat.gares.length > 0 && (
-        <div className="mt-6 overflow-x-auto">
-          <table className="min-w-full border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-gray-300">
-                <th className="py-2 pr-4 font-medium">Nom</th>
-                <th className="py-2 pr-4 font-medium">Code</th>
-                <th className="py-2 pr-4 font-medium">Région</th>
-              </tr>
-            </thead>
-            <tbody>
-              {resultat.gares.map((gare) => (
-                <tr key={gare.id} className="border-b border-gray-100">
-                  <td className="py-2 pr-4">{gare.nom}</td>
-                  <td className="py-2 pr-4">{gare.code}</td>
-                  <td className="py-2 pr-4">{gare.region}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-4 pt-4">
+          <div className="pointer-events-auto w-full max-w-md">
+            <BarreRecherche />
+          </div>
         </div>
-      )}
+      </div>
     </main>
   );
 }

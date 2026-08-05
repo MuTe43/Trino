@@ -17,6 +17,7 @@ import tn.sncft.trino.circulation.repo.HoraireRepository;
 import tn.sncft.trino.circulation.repo.PassageGareRepository;
 import tn.sncft.trino.referentiel.domaine.Desserte;
 import tn.sncft.trino.referentiel.domaine.Gare;
+import tn.sncft.trino.referentiel.domaine.Train;
 import tn.sncft.trino.referentiel.service.DesserteService;
 
 import java.math.BigDecimal;
@@ -192,6 +193,7 @@ public class GenerateurCourses {
         passage.setOrdre(arret.ordre());
         passage.setPkKm(arret.pkKm());
         passage.setMargeMin(arret.margeMin());
+        passage.setQuai(quaiPour(course.getTrain(), arret.gare()));
 
         // Estimates start equal to the plan and are never null where a
         // theoretical time exists. They diverge only once phase 3 revises them.
@@ -246,6 +248,31 @@ public class GenerateurCourses {
             }
         }
         return plan;
+    }
+
+    /**
+     * Deterministic platform assignment: a pure function of the train and the
+     * gare, so the same course calling at the same gare always lands on the
+     * same quai, on every run, with no state and no randomness. Two different
+     * trains can land on the same platform at overlapping times -- this does
+     * not model platform conflicts, only fills the board's voie column.
+     *
+     * <p>Package-visible so V6__backfill_quai_passage_gare.sql (which fixes
+     * the rows generated before this method existed) can be checked to use
+     * the exact same formula, and so this is unit-testable without going
+     * through the whole generation pipeline.
+     *
+     * <p>A gare with no {@code nbQuais} (or zero) gets no invented platform:
+     * {@code null} is the correct answer there, and the board already renders
+     * it as {@code —}.
+     */
+    static String quaiPour(Train train, Gare gare) {
+        Short nbQuais = gare.getNbQuais();
+        if (nbQuais == null || nbQuais <= 0) {
+            return null;
+        }
+        long index = Math.floorMod(train.getId() + gare.getId(), (long) nbQuais);
+        return String.valueOf(index + 1);
     }
 
     private LocalDate aujourdhui() {

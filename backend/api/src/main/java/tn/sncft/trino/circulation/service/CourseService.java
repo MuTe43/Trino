@@ -66,12 +66,15 @@ public class CourseService {
         this.calculateurEta = calculateurEta;
     }
 
+    /** Every status there is: what "no filter" is expressed as at the query boundary. */
+    private static final List<StatutCourse> TOUS_LES_STATUTS = List.of(StatutCourse.values());
+
     @Transactional(readOnly = true)
-    public Page<CourseResumeDTO> lister(LocalDate date, Long ligneId, Long gareId, StatutCourse statut,
+    public Page<CourseResumeDTO> lister(LocalDate date, Long ligneId, Long gareId, List<StatutCourse> statuts,
                                         TypeTrain type, String q, int page, int taille) {
         Page<Course> courses = courseRepository.rechercher(
                 date == null ? LocalDate.now(ZONE_RESEAU) : date,
-                ligneId, gareId, statut, type, motif(q),
+                ligneId, gareId, statutsOuTous(statuts), type, motif(q),
                 PageableUtils.de(page, taille));
 
         Map<Long, List<PassageGare>> passages = chargerPassages(
@@ -85,6 +88,17 @@ public class CourseService {
     @Transactional(readOnly = true)
     public Page<CourseResumeDTO> rechercher(String q, LocalDate date, int page, int taille) {
         return lister(date, null, null, null, null, q, page, taille);
+    }
+
+    /**
+     * "No filter" is passed down as every known status, never as a null or
+     * empty collection: {@code course.statut} is a not-null column, so
+     * matching every value of the enum is exactly equivalent to not filtering
+     * at all, and it sidesteps binding an empty/null collection to a JPQL
+     * {@code in} clause, which Hibernate does not handle reliably.
+     */
+    private List<StatutCourse> statutsOuTous(List<StatutCourse> statuts) {
+        return (statuts == null || statuts.isEmpty()) ? TOUS_LES_STATUTS : statuts;
     }
 
     @Transactional(readOnly = true)

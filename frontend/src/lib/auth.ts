@@ -1,8 +1,5 @@
-import { ApiError } from "./api";
+import { ApiError, API_BASE_URL } from "./api";
 import type { ErreurApi, LoginResponse, Utilisateur } from "./types";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 // Access token lives in memory only (never localStorage, never a JS-readable
 // cookie) — lost on page refresh, which is expected for this phase.

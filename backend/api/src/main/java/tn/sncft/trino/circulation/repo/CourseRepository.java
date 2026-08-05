@@ -77,12 +77,16 @@ public interface CourseRepository extends JpaRepository<Course, Long> {
      * The count query is spelled out because Spring Data cannot derive one from
      * a query with fetch joins.
      *
-     * <p>The status predicate is written {@code :statut = c.statut} rather than
-     * the natural way round so it does not match the phase-3 acceptance grep
-     * for {@code \.statut =}, which guards "MachineEtatCourse is the only
-     * writer of course.statut". A comparison inside JPQL is not an assignment,
-     * but a plain-text grep cannot tell, and a guardrail with standing false
-     * positives stops being read.
+     * <p>{@code statuts} is never null or empty: "no filter" is expressed by
+     * {@link tn.sncft.trino.circulation.service.CourseService} passing every
+     * {@link StatutCourse} value, not by binding a null collection. Hibernate
+     * does not reliably support {@code :statuts is null} against a collection
+     * parameter, and {@code c.statut} is never null (the column is {@code not
+     * null}), so "matches every known status" is exactly equivalent to "no
+     * filter" and needs no null-guard in the query at all. This also makes the
+     * phase-3 {@code :statut = c.statut} reversal moot for this query: the
+     * text no longer contains {@code \.statut =} to begin with, so nothing is
+     * dodging the acceptance grep on purpose anymore.
      */
     @Query(value = """
             select c from Course c
@@ -90,7 +94,7 @@ public interface CourseRepository extends JpaRepository<Course, Long> {
               join fetch c.train
             where c.dateService = :date
               and (:ligneId is null or c.ligne.id = :ligneId)
-              and (:statut is null or :statut = c.statut)
+              and c.statut in :statuts
               and (:type is null or c.train.type = :type)
               and (:gareId is null or exists (
                     select 1 from PassageGare p where p.course = c and p.gare.id = :gareId))
@@ -106,7 +110,7 @@ public interface CourseRepository extends JpaRepository<Course, Long> {
             select count(c) from Course c
             where c.dateService = :date
               and (:ligneId is null or c.ligne.id = :ligneId)
-              and (:statut is null or :statut = c.statut)
+              and c.statut in :statuts
               and (:type is null or c.train.type = :type)
               and (:gareId is null or exists (
                     select 1 from PassageGare p where p.course = c and p.gare.id = :gareId))
@@ -120,7 +124,7 @@ public interface CourseRepository extends JpaRepository<Course, Long> {
     Page<Course> rechercher(@Param("date") LocalDate date,
                             @Param("ligneId") Long ligneId,
                             @Param("gareId") Long gareId,
-                            @Param("statut") StatutCourse statut,
+                            @Param("statuts") Collection<StatutCourse> statuts,
                             @Param("type") TypeTrain type,
                             @Param("q") String q,
                             Pageable pageable);

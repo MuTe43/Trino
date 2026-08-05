@@ -5,7 +5,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import tn.sncft.trino.circulation.dto.PassageDTO;
+import tn.sncft.trino.circulation.dto.DepartGareDTO;
 import tn.sncft.trino.circulation.service.DepartsService;
 
 import java.util.List;
@@ -25,8 +25,8 @@ public class DepartsController {
     }
 
     @GetMapping("/{id}/departs")
-    public List<PassageDTO> departs(@PathVariable Long id,
-                                    @RequestParam(defaultValue = "20") int limite) {
+    public List<DepartGareDTO> departs(@PathVariable Long id,
+                                       @RequestParam(defaultValue = "20") int limite) {
         return departsService.prochainsDeparts(id, limite);
     }
 }

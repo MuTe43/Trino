@@ -40,12 +40,18 @@ public interface PassageGareRepository extends JpaRepository<PassageGare, Long> 
      * the board is lying to the people standing in front of it.
      *
      * <p>The terminus of a run has no departure and so never appears here.
+     * {@code statutsExclus} excludes closed runs only ({@code TERMINUS_ATTEINT});
+     * an {@code ANNULE} course is deliberately not excluded here -- the board
+     * still renders it, as a present-but-dead row.
+     *
+     * <p>{@code join fetch c.train} is what lets the caller build a
+     * {@code DepartGareDTO} (train number, name, type) without a second query
+     * per row.
      */
     @Query("""
             select p from PassageGare p
               join fetch p.gare
               join fetch p.course c
-              join fetch c.ligne
               join fetch c.train
             where p.gare.id = :gareId
               and c.dateService = :date
@@ -59,4 +65,27 @@ public interface PassageGareRepository extends JpaRepository<PassageGare, Long> 
                                   @Param("depuis") OffsetDateTime depuis,
                                   @Param("statutsExclus") Collection<StatutCourse> statutsExclus,
                                   Pageable pageable);
+
+    /**
+     * Terminus gare name for each course, resolved as the stop with the
+     * highest {@code ordre} for that course. One query for the whole batch
+     * (a correlated subquery, evaluated by the database) rather than one
+     * query per row -- the station board must not fetch a stop list per train
+     * just to find out where it is headed.
+     */
+    @Query("""
+            select p.course.id as courseId, p.gare.nom as nom
+            from PassageGare p
+            where p.course.id in :courseIds
+              and p.ordre = (
+                  select max(p2.ordre) from PassageGare p2 where p2.course.id = p.course.id
+              )
+            """)
+    List<TerminusProjection> findTerminusGares(@Param("courseIds") Collection<Long> courseIds);
+
+    interface TerminusProjection {
+        Long getCourseId();
+
+        String getNom();
+    }
 }

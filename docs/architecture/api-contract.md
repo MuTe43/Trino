@@ -78,8 +78,8 @@ GET /recherche?q=                        unified: numéro, ligne, gare, destinat
 }
 ```
 
-`PassageDTO` — one per stop, returned by `/courses/{id}/passages` and by
-`/gares/{id}/departs`. Carries all three times from spec 4.5:
+`PassageDTO` — one per stop, returned by `/courses/{id}/passages`. Carries all
+three times from spec 4.5:
 
 ```json
 {

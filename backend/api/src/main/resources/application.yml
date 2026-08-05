@@ -38,6 +38,10 @@ management:
       show-details: never
 
 trino:
+  cors:
+    # Comma-separated list -- a list, not a single string, because phase 7's
+    # docker-compose needs to allow more than one frontend origin at once.
+    origines: ${TRINO_CORS_ORIGINES:http://localhost:3000}
   jwt:
     secret: ${TRINO_JWT_SECRET:changeme-dev-secret-not-for-production-use-only-32bytes-min}
     access-expiration-minutes: 30

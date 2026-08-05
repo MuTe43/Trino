@@ -368,6 +368,60 @@ d'états atteint (`A_QUAI`, `EN_CIRCULATION`, `RETARDE`, `TERMINUS_ATTEINT`) ; 2
 courses passées `RETARDE` sans le moindre ping ; 10 courses basculées en
 `ARRET_EXCEPTIONNEL` environ 70 secondes après l'arrêt du flux.
 
+### Phase 4 — portail voyageur, carte et tableau d'affichage
+
+**Une direction visuelle décidée avant d'écrire un composant.** Le défaut par
+défaut d'une interface générée est reconnaissable : carte grise, accent bleu,
+ombre portée, coins arrondis uniformes, police Inter. La direction retenue
+l'exclut explicitement — bleu SNCFT employé comme encre et non comme aplat,
+IBM Plex Sans et sa coupe condensée, chiffres tabulaires partout où une heure
+est comparée à une autre, et une liste de proscriptions aussi précise que la
+liste des choix. Nommer les défauts à éviter s'est révélé plus efficace que
+décrire la cible.
+
+**Le tableau d'affichage n'est pas une page web.** Lu à distance dans un hall,
+en 1920×1080, sans pointeur ni survol : typographie condensée, contraste élevé,
+destination en colonne la plus large, heure théorique barrée au-dessus de
+l'heure révisée dans la couleur du retard. C'est l'écran où la distinction
+*prévue / estimée / réelle* du §4.5 devient visible pour le voyageur.
+
+**Défauts trouvés et corrigés :**
+
+1. **Les classes Tailwind construites par interpolation n'existaient pas.**
+   C'est le défaut le plus instructif du projet. Tailwind 4 ne génère que les
+   utilitaires dont le nom apparaît *littéralement* dans les sources : une
+   classe assemblée à l'exécution (`` `text-${statut}` ``) n'est jamais émise.
+   Neuf des dix couleurs de statut n'existaient donc pas, et toute la gamme
+   s'affichait dans la couleur héritée. Le compilateur TypeScript, ESLint et la
+   compilation de production passaient tous au vert : le code était correct, seul
+   le CSS manquait. Corrigé par une table de correspondance littérale.
+
+2. **La couleur d'un arrêt révisé était celle du pire retard de la course.** Une
+   mise à jour de retard écrasait la classe de chaque arrêt avec celle calculée
+   au niveau de la course, si bien qu'un arrêt aval ayant résorbé son retard
+   affichait ses propres minutes dans la couleur du retard maximal. Symptôme
+   discret, donnée fausse.
+
+3. **La carte s'abonnait à toutes les lignes du référentiel**, pas aux lignes
+   visibles — contraire à l'invariant de segmentation des canaux.
+
+4. **Deux fuites sur les déconnexions SSE.** Une déconnexion client remontait en
+   ERROR avec une trace, puis échouait une seconde fois en tentant d'écrire une
+   réponse JSON dans un flux `text/event-stream`. Sous Windows elle prend la
+   forme d'une `IOException` nue, non des exceptions attendues. Et les échecs du
+   battement de cœur, émis par le planificateur, ne passaient pas du tout par le
+   chemin de l'émetteur : il a fallu leur donner un `ErrorHandler` propre.
+
+**Une limite d'architecture découverte, pas subie.** Un navigateur n'autorise
+qu'environ six connexions simultanées par origine en HTTP/1.1, partagées entre
+le flux SSE et les appels REST. Avec un canal par ligne et cinq lignes, la carte
+au zoom réseau complet sature l'origine et la requête REST suivante se met en
+file — l'application paraît figée, au zoom par défaut et non dans un cas
+limite. La réponse retenue est le multiplexage : une seule connexion portant une
+liste d'abonnements explicite, l'identité du canal voyageant dans la charge
+utile. La segmentation est préservée — le client ne reçoit toujours que ce qu'il
+a demandé — sans exiger HTTP/2, donc sans TLS, pour une démonstration locale.
+
 ---
 
 ## 4. Ce qui n'a pas été construit, et pourquoi

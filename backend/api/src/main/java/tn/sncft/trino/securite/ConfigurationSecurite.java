@@ -41,8 +41,19 @@ public class ConfigurationSecurite {
 
     private final ObjectMapper objectMapper;
 
-    public ConfigurationSecurite(ObjectMapper objectMapper) {
+    /**
+     * Frontend origins allowed to call the API. A list, not a single string,
+     * because phase 7's docker-compose needs to allow more than one origin at
+     * once; overridable via {@code TRINO_CORS_ORIGINES} (comma-separated) so
+     * serving the frontend from a port other than 3000 does not require
+     * editing this file.
+     */
+    private final List<String> origines;
+
+    public ConfigurationSecurite(ObjectMapper objectMapper,
+                                 @Value("${trino.cors.origines}") List<String> origines) {
         this.objectMapper = objectMapper;
+        this.origines = origines;
     }
 
     @Bean
@@ -68,6 +79,14 @@ public class ConfigurationSecurite {
                 .cors(cors -> cors.configurationSource(sourceCors()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Boot's own fallback error page. Normally never reached -- every
+                        // exception on a synchronous request is already resolved by
+                        // ApiExceptionHandler -- except when Tomcat's async machinery
+                        // auto-forwards here on an async context nobody completed (an SSE
+                        // stream that outlives its client, notably). Anonymous callers to a
+                        // permitAll endpoint like /stream/** must not fail authorization a
+                        // second time trying to reach the page reporting the first failure.
+                        .requestMatchers("/error").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/gares/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/lignes/**").permitAll()
@@ -106,8 +125,20 @@ public class ConfigurationSecurite {
     }
 
     private CorsConfigurationSource sourceCors() {
+        // Credentials are allowed, so a wildcard origin is illegal. Spring only
+        // discovers that per request, throwing IllegalArgumentException inside
+        // checkOrigin -- every preflight 500s and the cause is nowhere near the
+        // configuration that produced it. Since phase 7 sets this from the
+        // environment and "*" is the first thing anyone reaches for, fail at
+        // startup with a message that names the fix instead.
+        if (origines.stream().anyMatch(origine -> origine.contains("*"))) {
+            throw new IllegalStateException(
+                    "trino.cors.origines n'accepte pas de joker (\"*\") : les requêtes sont envoyées "
+                            + "avec des identifiants. Indiquez les origines exactes, séparées par des "
+                            + "virgules, par exemple http://localhost:3000,http://localhost:3001.");
+        }
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:3000"));
+        configuration.setAllowedOrigins(origines);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         configuration.setAllowCredentials(true);

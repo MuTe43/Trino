@@ -1,5 +1,8 @@
 package tn.sncft.trino.commun;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.apache.catalina.connector.ClientAbortException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -11,9 +14,11 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.io.IOException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -92,6 +97,51 @@ public class ApiExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ErreurDTO> gererConflit(DataIntegrityViolationException ex) {
         return reponse(HttpStatus.CONFLICT, "CONFLIT", "Conflit : cette opération viole une contrainte d'unicité.",
+                List.of());
+    }
+
+    /**
+     * A browser {@code EventSource} disconnecting mid-stream (navigation, tab
+     * close) unwinds through here on every SSE subscription -- {@link
+     * tn.sncft.trino.diffusion.HubSse} already handles the same exceptions
+     * around an explicit {@code send()}, but the container can also raise them
+     * while completing the async dispatch itself, outside that path. Neither
+     * case is an incident, and by the time either fires the
+     * {@code text/event-stream} response is already committed, so there is no
+     * body left to write -- attempting one is exactly the second failure this
+     * handler exists to avoid.
+     */
+    @ExceptionHandler({AsyncRequestNotUsableException.class, ClientAbortException.class})
+    public void gererDeconnexionClient(Exception ex) {
+        log.debug("Flux interrompu par le client : {} - {}", ex.getClass().getSimpleName(), ex.getMessage());
+    }
+
+    /**
+     * The Windows counterpart of {@link #gererDeconnexionClient}: a client
+     * that vanishes mid async dispatch (SSE navigation away, tab close) can
+     * surface here as a bare {@link IOException}, with neither of the two
+     * more specific types above -- those are matched first when they do
+     * apply, since Spring picks the closest exception match.
+     *
+     * <p>Deliberately not a blanket handler: it only takes the DEBUG-and-drop
+     * path when {@code response.isCommitted()} or {@code
+     * request.isAsyncStarted()}, i.e. exactly the case where a body cannot
+     * usefully be written back anyway (the {@code text/event-stream} headers
+     * are already sent, or the client that would receive it is gone). A
+     * genuine {@link IOException} on an ordinary, not-yet-committed,
+     * synchronous response -- a real failure worth seeing -- still falls
+     * through to the ERROR branch and the normal {@link ErreurDTO} body.
+     */
+    @ExceptionHandler(IOException.class)
+    public ResponseEntity<ErreurDTO> gererErreurEs(IOException ex, HttpServletRequest request,
+                                                    HttpServletResponse response) {
+        if (response.isCommitted() || request.isAsyncStarted()) {
+            log.debug("E/S interrompue par une déconnexion client (réponse déjà engagée) : {} - {}",
+                    ex.getClass().getSimpleName(), ex.getMessage());
+            return null;
+        }
+        log.error("Erreur d'E/S non gérée", ex);
+        return reponse(HttpStatus.INTERNAL_SERVER_ERROR, "ERREUR_INTERNE", "Une erreur interne est survenue.",
                 List.of());
     }
 
