@@ -1,0 +1,17 @@
+# Local-machine override, not part of the deployed topology.
+#
+# This dev machine runs a PostgreSQL 12 service (PostgreSQL_For_Odoo) bound to
+# 0.0.0.0:5432, which shadows the db service's published port: connections to
+# localhost:5432 reach that server instead of this container and are rejected,
+# because it has no `trino` role. Publishing on 5433 sidesteps it without
+# touching a service another application depends on.
+#
+# Same substitution the API already makes for 8080 -> 8081. Run the API with:
+#   --spring.datasource.url=jdbc:postgresql://localhost:5433/trino
+#
+# docker-compose.yml stays the canonical topology; delete this file on a machine
+# where 5432 is free.
+services:
+  db:
+    ports:
+      - "5433:5432"

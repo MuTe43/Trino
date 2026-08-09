@@ -64,7 +64,23 @@ frontend/src/app/exploitation/tableau-bord/page.tsx
 frontend/src/components/graphiques/{CourbePonctualite,HistogrammeRetards,HeatmapRetards}.tsx
 ```
 
-Add `poi-ooxml` for XLSX. Nothing else.
+Add `poi-ooxml` for XLSX. Nothing else **on the Maven side** — Recharts is a frontend dependency and is mandated by the Charts section below.
+
+## Incidents do not exist yet
+
+The `incident` table is phase 6's. Do not create it here — an empty table returns
+the same `0` that a hardcoded `0` does, so creating it early buys nothing and
+takes schema ownership from the phase that needs it.
+
+- `incidentsOuverts` and `incidentsResolus` return `0`, with a `// phase 6`
+  comment at the source.
+- `/rapports/incidents` is deferred to phase 6.
+- `ServiceExport` is written generic over a report name, so adding `incidents`
+  later is one method plus one map entry.
+
+**Contingency, to record in `STATE.md`:** phase 6 is the cut line. If it is
+dropped, these two tiles must be removed from the dashboard rather than left
+showing zero — two permanent zeros read as a broken feature, not a scoped one.
 
 ## Queries
 
@@ -138,7 +154,32 @@ VOY=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: applica
   -d '{"email":"voyageur@sncft.tn","motDePasse":"Trino2026!"}' | jq -r .accessToken)
 curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $VOY" \
   "localhost:8080/api/v1/tableau-bord/kpi?date=$(date +%F)"    # expect 403
+
+# ADMINISTRATEUR is NOT a superuser: it manages référentiel, accounts and the
+# connection log, never operational dashboards. Separation of duties — pin it.
+ADM=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"admin@sncft.tn","motDePasse":"Trino2026!"}' | jq -r .accessToken)
+curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADM" \
+  "localhost:8080/api/v1/tableau-bord/kpi?date=$(date +%F)"    # expect 403
 ```
 
-Run the simulator at acceleration 60 for a few hours beforehand so the charts
-have several days of data. Empty charts demo badly.
+## Historical data — a backfill, not a long simulator run
+
+Running the simulator at x60 does **not** produce several days. `GenerateurCourses`
+materialises one service date; the simulator replays it quickly and stops, every
+course at `TERMINUS_ATTEINT`. Longer runtime gives you one day rendered fast and
+a flat chart.
+
+Pull the backfill forward from `phase-7.md` and write it now, since the charts
+need it to be worth looking at:
+
+`scripts/backfill.(sh|java)` synthesises 14 past service dates directly —
+`course` and `passage_gare` rows already complete, with real times stamped and
+delays drawn from the same distribution the simulator uses. No positions, no
+`position_course` rows: the charts read stamped passages, not the feed.
+
+Deterministic seed, so a reset reproduces the same history and your demo numbers
+do not move between runs. Idempotent on (train, date, départ) like the generator.
+
+Only then does the ±5 point day-to-day variance above stop mattering: a 7-day
+window over fourteen backfilled days is stable.

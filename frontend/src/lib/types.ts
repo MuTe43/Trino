@@ -320,3 +320,69 @@ export interface EvenementIncident {
   statut: StatutIncident;
   resoluAt: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Tableau de bord (phase 5). Mirrors backend/api/.../analytique/dto.
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /tableau-bord/kpi?date=`.
+ *
+ * `passagesMesures` is the denominator behind `tauxPonctualite`: it is zero
+ * early in a service day, when nothing has been reached yet and a rate of 0
+ * would read as total failure rather than as "no data". Render "—" in that
+ * case, never "0 %".
+ *
+ * `voyageursImpactes` is ESTIMATED from train capacity on delayed courses. It
+ * is modelled, never measured, and the UI has to say so.
+ *
+ * `incidentsOuverts` / `incidentsResolus` are hardcoded 0 until phase 6 creates
+ * the incident table. If phase 6 is cut, remove the two tiles rather than leave
+ * them showing zero — a permanent zero reads as a broken feature.
+ */
+export interface KpiJourDTO {
+  date: string;
+  trainsEnCirculation: number;
+  nbRetards: number;
+  retardMoyenMin: number;
+  tauxPonctualite: number;
+  passagesMesures: number;
+  incidentsOuverts: number;
+  incidentsResolus: number;
+  trainsAnnules: number;
+  voyageursImpactes: number;
+}
+
+export interface RetardParLigneDTO {
+  ligneId: number;
+  ligneNom: string;
+  courses: number;
+  coursesEnRetard: number;
+  retardMoyenMin: number;
+  retardMaxMin: number;
+}
+
+/** One cell of the gare x hour grid. `heure` is already in Africa/Tunis. */
+export interface CaseHeatmapDTO {
+  gareId: number;
+  gareNom: string;
+  heure: number;
+  retardMoyenMin: number;
+  passages: number;
+}
+
+export interface PointPonctualiteDTO {
+  periode: string;
+  passages: number;
+  passagesPonctuels: number;
+  tauxPonctualite: number;
+  retardMoyenMin: number;
+}
+
+export type Granularite = "JOUR" | "MOIS";
+
+/** One bar of the delay histogram. Buckets mirror `ClasseRetard` on the server. */
+export interface BucketRetardDTO {
+  classe: ClasseRetard;
+  courses: number;
+}

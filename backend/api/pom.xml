@@ -68,6 +68,14 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- XLSX export (phase 5). Not managed by the Boot BOM, so the version
+             is pinned here. CSV needs nothing: it is written by hand, because
+             the separator and the BOM are the whole point. -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.3.0</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

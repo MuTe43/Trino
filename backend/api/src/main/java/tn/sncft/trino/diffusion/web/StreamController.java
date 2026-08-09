@@ -4,9 +4,14 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import tn.sncft.trino.diffusion.HubSse;
+
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * The live channels. Public and anonymous per api-contract.md: the passenger
@@ -20,10 +25,55 @@ import tn.sncft.trino.diffusion.HubSse;
 @RequestMapping("/api/v1/stream")
 public class StreamController {
 
+    /**
+     * Upper bound on channels per connection. The network has five lignes and
+     * around forty gares, so nothing legitimate comes close; this only stops a
+     * caller from pinning arbitrary server memory with one request.
+     */
+    private static final int MAX_CANAUX = 64;
+
     private final HubSse hubSse;
 
     public StreamController(HubSse hubSse) {
         this.hubSse = hubSse;
+    }
+
+    /**
+     * Multiplexed stream: {@code /stream?lignes=1,2,3&gares=7}.
+     *
+     * <p>One connection per client rather than one per channel. A browser
+     * allows roughly six connections per origin over HTTP/1.1 and the API is a
+     * single origin, so the previous shape -- one socket per ligne -- put the
+     * map at five of that budget on the default view and left REST calls
+     * queueing behind the streams.
+     *
+     * <p>Still invariant 5: the subscription list is explicit, so a client
+     * receives only the channels it named. There is no way to ask for
+     * everything.
+     */
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter multiplex(@RequestParam(name = "lignes", required = false) List<Long> lignes,
+                                @RequestParam(name = "gares", required = false) List<Long> gares) {
+        // LinkedHashSet: de-duplicates a repeated id and keeps the caller's
+        // order, which only matters for readable log lines.
+        Set<String> canaux = new LinkedHashSet<>();
+        if (lignes != null) {
+            lignes.forEach(id -> canaux.add(HubSse.canalLigne(id)));
+        }
+        if (gares != null) {
+            gares.forEach(id -> canaux.add(HubSse.canalGare(id)));
+        }
+        // IllegalArgumentException is what ApiExceptionHandler turns into a 400
+        // VALIDATION_ECHOUEE envelope. An empty subscription would otherwise
+        // open a connection that can never receive anything -- exactly the
+        // global-channel shape invariant 5 forbids, only silent.
+        if (canaux.isEmpty()) {
+            throw new IllegalArgumentException("Au moins une ligne ou une gare doit être demandée.");
+        }
+        if (canaux.size() > MAX_CANAUX) {
+            throw new IllegalArgumentException("Trop de canaux demandés (maximum " + MAX_CANAUX + ").");
+        }
+        return hubSse.abonnerMultiplex(canaux);
     }
 
     @GetMapping(value = "/lignes/{ligneId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

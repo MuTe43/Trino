@@ -119,6 +119,7 @@ server-side — the board must not have to fetch the stop list per train.
 ## Circulation — live (SSE)
 
 ```
+GET /stream?lignes=1,2,3&gares=7 text/event-stream   multiplexé
 GET /stream/lignes/{ligneId}     text/event-stream
 GET /stream/gares/{gareId}       text/event-stream
 ```
@@ -126,6 +127,43 @@ GET /stream/gares/{gareId}       text/event-stream
 Public, no auth (the passenger portal and station boards are anonymous).
 Emits deltas only. Event names: `position`, `statut`, `retard`, `incident`.
 Heartbeat comment every 15s to keep proxies from closing the stream.
+
+**`/stream` is the one a browser client should use** (added phase 5). One
+connection per client carrying every channel it asked for. A browser allows
+about six connections per origin over HTTP/1.1 and shares them with every REST
+call to the same origin; one socket per ligne put the map at five of that budget
+on the default view. Measured against the API: at six channels the next REST
+request is never served and the app appears to hang. On one multiplexed
+connection, twelve channels cost nothing.
+
+This does not weaken invariant 5. The subscription list is explicit, so a client
+still receives only what it named — there is no way to ask for everything. An
+empty subscription is refused with `400 VALIDATION_ECHOUEE` rather than opening
+a stream that can never deliver anything.
+
+Frames on `/stream` are wrapped so each carries the channels it belongs to:
+
+```
+event: position
+data: {"canaux":["ligne:1","gare:7"],"donnees":{"courseId":4821,"latitude":35.83, ...}}
+```
+
+`canaux` is a **list**, and that is load-bearing. A course publishes to its
+ligne and to every gare it has not yet cleared, so one delta legitimately
+concerns several of a client's channels at once. The frame is sent once, tagged
+with all of them. Tagging it with only the first match is silent data loss: the
+client routes on this field, so a page holding both the map (`ligne:1`) and a
+station board (`gare:7`) would see the delta delivered to the map and never to
+the board — no error, no reconnect, just a table that stops moving.
+
+The two per-path endpoints keep the bare payload shown below and stay for the
+kiosk board, which watches exactly one gare and should stay simple.
+
+No frame carries an `id`, so there is no replay and a reconnecting client cannot
+resume with `Last-Event-ID`; it refetches its snapshot over REST. Deltas emitted
+while a client is reconnecting are lost by design. The client therefore hands
+over rather than cuts when its channel set changes — it keeps the old connection
+delivering until the replacement is open.
 
 ```
 event: position
@@ -185,18 +223,48 @@ Creating an incident with a `courseId` may set that course's `causeRetard`.
 GET /tableau-bord/kpi?date=
 GET /tableau-bord/retards-par-ligne?date=
 GET /tableau-bord/heatmap?du=&au=            gare x tranche horaire
-GET /rapports/ponctualite?du=&au=&granularite=jour|mois
-GET /rapports/incidents?du=&au=
+GET /tableau-bord/distribution-retards?du=&au=   courses par tranche de retard
+GET /rapports/ponctualite?du=&au=&granularite=JOUR|MOIS
+GET /rapports/incidents?du=&au=              phase 6
 GET /rapports/{nom}/export?du=&au=&format=csv|xlsx
 ```
 
-KPI payload: `trainsEnCirculation`, `nbRetards`, `retardMoyenMin`,
-`tauxPonctualite`, `incidentsOuverts`, `incidentsResolus`, `trainsAnnules`,
-`voyageursImpactes` (estimated as sum of capacity on delayed courses — label it
-as an estimate in the UI, it is not a real measurement).
+All of these are `RESPONSABLE_EXPLOITATION` and **only** that role.
+`ADMINISTRATEUR` gets 403: it administers the référentiel, the accounts and the
+connection log, and reading operational analytics is a different duty.
 
-Export returns the file with `Content-Disposition: attachment`. CSV and XLSX
-only. PDF is out of scope unless phase 7 has time left.
+KPI payload: `trainsEnCirculation`, `nbRetards`, `retardMoyenMin`,
+`tauxPonctualite`, `passagesMesures`, `incidentsOuverts`, `incidentsResolus`,
+`trainsAnnules`, `voyageursImpactes` (estimated as sum of capacity on delayed
+courses — label it as an estimate in the UI, it is not a real measurement).
+
+- `trainsEnCirculation` is the day's courses that were not cancelled, not the
+  number moving at this instant — the latter reading reports zero for every past
+  date and makes the card useless for anything but today.
+- `nbRetards` counts courses 5+ minutes late, the same cut as `ClasseRetard`.
+- `tauxPonctualite` counts **only stops actually reached**
+  (`arrivee_reelle is not null`). A stop still ahead of its train carries
+  `retard_min = 0`; counting it would score the untravelled rest of the day as
+  on time, so punctuality would start each morning at 100 % and sink as reality
+  arrived. `passagesMesures` is that denominator, and it is 0 early in a service
+  day — render "—" then, never "0 %".
+- `distribution-retards` is not in the phase-5 query list but its Charts section
+  asks for a delay histogram and nothing else carries that distribution. Buckets
+  are computed by `ClasseRetard.de`, never by a CASE in SQL, so the thresholds
+  keep one definition.
+- Hours in the heatmap are bucketed in `Africa/Tunis`, not UTC (invariant 6).
+
+Export returns the file with `Content-Disposition: attachment`, filename
+`trino-{nom}-{du}-{au}.{ext}`. CSV uses `;`, a UTF-8 BOM and decimal commas so a
+French-locale Excel opens it correctly. CSV and XLSX only; PDF is out of scope
+unless phase 7 has time left.
+
+The export is written synchronously to the response, deliberately **not** as a
+`StreamingResponseBody`. Async turns the request over to a second dispatch, and
+`FiltreJwt` (an `OncePerRequestFilter`) skips async dispatches while Spring
+Security's `AuthorizationFilter` does not — so the role rule denies an
+unauthenticated re-dispatch after `text/csv` is already committed. The file
+still downloads and the server logs three ERROR stack traces per export.
 
 ## Rate limits
 

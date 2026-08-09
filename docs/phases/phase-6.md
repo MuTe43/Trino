@@ -3,6 +3,20 @@
 Also read: `docs/architecture/domain-model.md` (Role enum, incident tables) and
 `docs/architecture/api-contract.md` (Incidents section).
 
+## Two things to close first
+
+1. **Confirm the multi-channel SSE frame against live traffic.** Phase 5 proved
+   it on the serialized body in `StreamControllerTest` but never watched a real
+   delta carry two channels, because the simulated day was exhausted. Incidents
+   publish on those same channels, so if the routing is wrong this phase
+   inherits the bug silently. Regenerate a service day, then watch
+   `/stream?lignes=1&gares=…` for a frame whose `canaux` holds both.
+
+2. **Make the DB-backed tests fail rather than skip.** `CoherenceSeedTest` and
+   `AnalytiqueRepositoryTest` currently self-skip when Postgres is unreachable,
+   so the suite reports green having tested nothing. Invert the default: require
+   the database, and let an explicit opt-out flag skip them. Fail closed.
+
 Your #3 priority. **This is the cut line.** If you reach the last week without
 phases 0-5 fully working, skip this and go straight to phase 7. A polished
 subset defends better than a broken superset.

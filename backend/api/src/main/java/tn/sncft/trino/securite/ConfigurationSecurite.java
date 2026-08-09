@@ -98,7 +98,10 @@ public class ConfigurationSecurite {
                         // SSE channels are anonymous per api-contract.md (passenger portal, station
                         // boards). No controller exists for them yet, but the rule stands regardless
                         // of build order: don't let the anyRequest().authenticated() default catch them.
-                        .requestMatchers(HttpMethod.GET, "/api/v1/stream/**").permitAll()
+                        // Both patterns on purpose: the multiplexed stream is /stream with no path
+                        // segment after it, and relying on "/stream/**" to match the bare path is a
+                        // matcher-implementation detail, not something to bet anonymous access on.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/stream", "/api/v1/stream/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         // The position feed authenticates with X-Ingest-Key, checked by
                         // FiltreCleIngestion ahead of this rule. The rule stays so the
@@ -115,6 +118,16 @@ public class ConfigurationSecurite {
                         .hasRole("ADMINISTRATEUR")
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/gares/**", "/api/v1/lignes/**", "/api/v1/trains/**")
                         .hasRole("ADMINISTRATEUR")
+                        // Dashboards and reports: RESPONSABLE_EXPLOITATION, and only that
+                        // role. ADMINISTRATEUR is NOT a superuser here -- it administers the
+                        // référentiel, the accounts and the connection log; reading
+                        // operational analytics is a different duty and stays separate.
+                        // Paired with @PreAuthorize on the services (invariant 9): the URL
+                        // rule runs in the filter chain, ahead of argument binding, so a
+                        // caller who may not touch the endpoint gets 403 rather than a 400
+                        // telling them their date format was wrong.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/tableau-bord/**", "/api/v1/rapports/**")
+                        .hasRole("RESPONSABLE_EXPLOITATION")
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(pointEntreeAuthentification())

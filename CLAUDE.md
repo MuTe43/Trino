@@ -40,8 +40,18 @@ docker compose up -d db          # Postgres on 5432
 cd backend && ./mvnw -q -pl api spring-boot:run          # API on 8080
 cd backend && ./mvnw -q -pl simulateur spring-boot:run   # simulator
 cd frontend && npm run dev                                # web on 3000
-cd backend && ./mvnw -q test                              # backend tests
+cd backend && TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino \
+  ./mvnw -q test                                          # backend tests
 ```
+
+**Never run `./mvnw test` without `TRINO_DB_URL` on this machine.** The
+DB-backed tests self-skip when the database is unreachable, and the suite then
+reports green having exercised none of the dashboard or seed SQL. A green run
+that skipped 13 tests is worse than a red one. Port 5433 because an unrelated
+PostgreSQL service owns 5432 here.
+
+`jq` is not installed on this machine; acceptance commands that pipe to it run
+with `node` instead. Same URLs, same assertions — do not edit the phase file.
 
 Acceptance commands in the phase files assume port 8080. This dev machine runs
 the API on 8081 because 8080 is taken by an unrelated service — substitute at

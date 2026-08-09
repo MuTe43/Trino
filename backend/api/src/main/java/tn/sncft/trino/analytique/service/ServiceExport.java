@@ -1,0 +1,230 @@
+package tn.sncft.trino.analytique.service;
+
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import tn.sncft.trino.analytique.dto.FormatExport;
+import tn.sncft.trino.analytique.dto.Granularite;
+import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
+import tn.sncft.trino.analytique.dto.TableauRapport;
+import tn.sncft.trino.analytique.repository.AnalytiqueRepository;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.function.BiFunction;
+
+/**
+ * Builds a report and writes it as CSV or XLSX.
+ *
+ * <p>Generic over the report name by design: reports are registered in a map
+ * from name to builder, so phase 6's {@code incidents} report is one builder
+ * method and one entry, with no new serialisation code.
+ */
+@Service
+public class ServiceExport {
+
+    /**
+     * Byte-order mark. Without it Excel on a French Windows locale reads a
+     * UTF-8 file as Windows-1252 and every accented station name arrives
+     * mojibaked -- "Béja" as "BÃ©ja". It is three bytes and it is the
+     * difference between a supervisor double-clicking the file and it working,
+     * or not.
+     *
+     * <p>Spelled as the three bytes rather than as a {@code "\uFEFF"}
+     * string literal. A BOM character in source is invisible in every editor
+     * and diff -- the next person to touch the line cannot see what they are
+     * deleting -- and writing bytes straight to the stream also removes any
+     * question about how the character would have been encoded.
+     */
+    private static final byte[] BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+
+    /**
+     * Excel splits on the list separator of the user's locale, which is a
+     * semicolon on a French install, not a comma.
+     */
+    private static final char SEPARATEUR = ';';
+
+    private final AnalytiqueRepository analytiqueRepository;
+
+    /** name -> builder. The single place a new report is registered. */
+    private final Map<String, BiFunction<LocalDate, LocalDate, TableauRapport>> rapports;
+
+    public ServiceExport(AnalytiqueRepository analytiqueRepository) {
+        this.analytiqueRepository = analytiqueRepository;
+        // phase 6 adds "incidents", this::rapportIncidents here once the
+        // incident table exists. That entry and its builder are the whole
+        // change -- no new CSV or XLSX code.
+        this.rapports = Map.of("ponctualite", this::rapportPonctualite);
+    }
+
+    @PreAuthorize("hasRole('RESPONSABLE_EXPLOITATION')")
+    @Transactional(readOnly = true)
+    public TableauRapport construire(String nom, LocalDate du, LocalDate au) {
+        BiFunction<LocalDate, LocalDate, TableauRapport> constructeur = rapports.get(nom);
+        if (constructeur == null) {
+            throw new IllegalArgumentException(
+                    "Rapport inconnu : " + nom + " (disponible : " + String.join(", ", rapports.keySet()) + ").");
+        }
+        if (du == null || au == null) {
+            throw new IllegalArgumentException("Les bornes du et au sont obligatoires.");
+        }
+        if (au.isBefore(du)) {
+            throw new IllegalArgumentException("La borne au ne peut pas précéder du.");
+        }
+        return constructeur.apply(du, au);
+    }
+
+    /** {@code trino-ponctualite-2026-08-01-2026-08-08.xlsx} */
+    public String nomFichier(String nom, LocalDate du, LocalDate au, FormatExport format) {
+        return "trino-" + nom + "-" + du + "-" + au + "." + format.extension();
+    }
+
+    public void ecrire(TableauRapport tableau, FormatExport format, OutputStream sortie) throws IOException {
+        if (format == FormatExport.XLSX) {
+            ecrireXlsx(tableau, sortie);
+        } else {
+            ecrireCsv(tableau, sortie);
+        }
+    }
+
+    private TableauRapport rapportPonctualite(LocalDate du, LocalDate au) {
+        List<PointPonctualiteDTO> points = analytiqueRepository.ponctualite(du, au, Granularite.JOUR);
+        List<List<Object>> lignes = new ArrayList<>(points.size());
+        for (PointPonctualiteDTO point : points) {
+            lignes.add(List.of(
+                    point.periode(),
+                    point.passages(),
+                    point.passagesPonctuels(),
+                    point.tauxPonctualite() * 100,
+                    point.retardMoyenMin()));
+        }
+        return new TableauRapport("ponctualite",
+                List.of("Date", "Passages mesurés", "Passages à l'heure", "Ponctualité (%)", "Retard moyen (min)"),
+                lignes);
+    }
+
+    private void ecrireCsv(TableauRapport tableau, OutputStream sortie) throws IOException {
+        sortie.write(BOM);
+        // The writer is not closed: closing it would close the servlet output
+        // stream, and the container owns that. Flushed instead.
+        Writer writer = new OutputStreamWriter(sortie, StandardCharsets.UTF_8);
+        ecrireLigneCsv(writer, tableau.entetes().stream().map(entete -> (Object) entete).toList());
+        for (List<Object> ligne : tableau.lignes()) {
+            ecrireLigneCsv(writer, ligne);
+        }
+        writer.flush();
+    }
+
+    private void ecrireLigneCsv(Writer writer, List<Object> valeurs) throws IOException {
+        StringBuilder ligne = new StringBuilder();
+        for (int i = 0; i < valeurs.size(); i++) {
+            if (i > 0) {
+                ligne.append(SEPARATEUR);
+            }
+            ligne.append(echapper(formaterCsv(valeurs.get(i))));
+        }
+        // CRLF: Excel is the target reader, and it is the line ending it emits
+        // itself.
+        ligne.append("\r\n");
+        writer.write(ligne.toString());
+    }
+
+    /**
+     * Decimals get a comma, not a point. A French-locale Excel parses "82.5"
+     * as text and right-aligns nothing; the column then cannot be charted or
+     * summed, which defeats exporting it at all.
+     */
+    private String formaterCsv(Object valeur) {
+        if (valeur == null) {
+            return "";
+        }
+        if (valeur instanceof Double nombre) {
+            return String.format(Locale.FRANCE, "%.2f", nombre);
+        }
+        if (valeur instanceof Float nombre) {
+            return String.format(Locale.FRANCE, "%.2f", nombre);
+        }
+        return String.valueOf(valeur);
+    }
+
+    private String echapper(String valeur) {
+        if (valeur.indexOf(SEPARATEUR) < 0 && valeur.indexOf('"') < 0
+                && valeur.indexOf('\n') < 0 && valeur.indexOf('\r') < 0) {
+            return valeur;
+        }
+        return '"' + valeur.replace("\"", "\"\"") + '"';
+    }
+
+    /**
+     * SXSSF rather than XSSF: it spills rows to disk instead of holding the
+     * whole sheet in memory. A year of daily rows would fit either way, but the
+     * streaming variant is what makes an unbounded report safe to add later.
+     */
+    private void ecrireXlsx(TableauRapport tableau, OutputStream sortie) throws IOException {
+        SXSSFWorkbook classeur = new SXSSFWorkbook(100);
+        try {
+            Sheet feuille = classeur.createSheet(tableau.nom());
+
+            Font graisse = classeur.createFont();
+            graisse.setBold(true);
+            CellStyle styleEntete = classeur.createCellStyle();
+            styleEntete.setFont(graisse);
+
+            CellStyle styleDate = classeur.createCellStyle();
+            styleDate.setDataFormat(classeur.createDataFormat().getFormat("yyyy-mm-dd"));
+
+            Row entete = feuille.createRow(0);
+            for (int colonne = 0; colonne < tableau.entetes().size(); colonne++) {
+                Cell cellule = entete.createCell(colonne);
+                cellule.setCellValue(tableau.entetes().get(colonne));
+                cellule.setCellStyle(styleEntete);
+            }
+
+            int numeroLigne = 1;
+            for (List<Object> valeurs : tableau.lignes()) {
+                Row ligne = feuille.createRow(numeroLigne++);
+                for (int colonne = 0; colonne < valeurs.size(); colonne++) {
+                    remplir(ligne.createCell(colonne), valeurs.get(colonne), styleDate);
+                }
+            }
+            classeur.write(sortie);
+            sortie.flush();
+        } finally {
+            // close() then dispose(), in that order: dispose() deletes the
+            // temporary files backing the sheets and renders the workbook
+            // unusable, so closing afterwards would be operating on something
+            // already torn down. Both are needed -- close() releases the
+            // package, dispose() is what stops SXSSF leaking spill files into
+            // the system temp directory for the life of the process.
+            classeur.close();
+            classeur.dispose();
+        }
+    }
+
+    /** Numbers stay numbers: a spreadsheet nobody can sum is a screenshot. */
+    private void remplir(Cell cellule, Object valeur, CellStyle styleDate) {
+        switch (valeur) {
+            case null -> cellule.setBlank();
+            case LocalDate date -> {
+                cellule.setCellValue(date);
+                cellule.setCellStyle(styleDate);
+            }
+            case Number nombre -> cellule.setCellValue(nombre.doubleValue());
+            default -> cellule.setCellValue(String.valueOf(valeur));
+        }
+    }
+}

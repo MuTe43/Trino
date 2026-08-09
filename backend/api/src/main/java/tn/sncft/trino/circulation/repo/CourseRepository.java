@@ -44,6 +44,20 @@ public interface CourseRepository extends JpaRepository<Course, Long> {
     List<Course> findDuJourSaufStatuts(@Param("date") LocalDate date,
                                        @Param("statutsExclus") Collection<StatutCourse> statutsExclus);
 
+    /**
+     * Every course of a service date, whatever its status. Used by the history
+     * backfill, which stamps finished runs and therefore must see the ones it
+     * already marked TERMINUS_ATTEINT on a previous run.
+     */
+    @Query("""
+            select c from Course c
+              join fetch c.ligne
+              join fetch c.train
+            where c.dateService = :date
+            order by c.departTheorique asc
+            """)
+    List<Course> findParDateService(@Param("date") LocalDate date);
+
     @Query("""
             select c from Course c
               join fetch c.ligne
