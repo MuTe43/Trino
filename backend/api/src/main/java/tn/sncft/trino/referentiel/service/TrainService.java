@@ -1,9 +1,12 @@
 package tn.sncft.trino.referentiel.service;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tn.sncft.trino.commun.ConflitException;
 import tn.sncft.trino.commun.PageableUtils;
 import tn.sncft.trino.commun.RessourceIntrouvableException;
 import tn.sncft.trino.referentiel.domaine.Ligne;
@@ -14,6 +17,7 @@ import tn.sncft.trino.referentiel.dto.TrainDTO;
 import tn.sncft.trino.referentiel.dto.TrainUpdateDTO;
 import tn.sncft.trino.referentiel.repo.LigneRepository;
 import tn.sncft.trino.referentiel.repo.TrainRepository;
+import tn.sncft.trino.referentiel.repo.TrainSpecifications;
 
 /**
  * Business logic for trains (rolling stock). No status, no delay: those
@@ -32,8 +36,11 @@ public class TrainService {
     }
 
     @Transactional(readOnly = true)
-    public Page<TrainDTO> lister(int page, int taille) {
-        return trainRepository.findAll(PageableUtils.de(page, taille)).map(this::versDTO);
+    public Page<TrainDTO> lister(TypeTrain type, Long ligneId, int page, int taille) {
+        Specification<Train> specification = Specification
+                .where(TrainSpecifications.typeEgal(type))
+                .and(TrainSpecifications.ligneIdEgal(ligneId));
+        return trainRepository.findAll(specification, PageableUtils.de(page, taille)).map(this::versDTO);
     }
 
     @Transactional(readOnly = true)
@@ -60,7 +67,15 @@ public class TrainService {
     @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Train train = trouverEntiteParId(id);
-        trainRepository.delete(train);
+        try {
+            trainRepository.delete(train);
+            // Forces the FK check now, inside the try -- without it the
+            // violation only surfaces at commit, outside this catch.
+            trainRepository.flush();
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflitException(
+                    "Impossible de supprimer le train " + id + " : il est référencé par des courses.");
+        }
     }
 
     private Train trouverEntiteParId(Long id) {

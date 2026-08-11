@@ -123,6 +123,41 @@ export async function authFetch(
 }
 
 /**
+ * `authFetch` plus the error envelope, for endpoints that return JSON.
+ *
+ * `incidents.ts` and `tableauBord.ts` each grew a private copy of exactly this
+ * before it lived anywhere shared; they are deliberately left alone here
+ * (phase 7 does not touch the incident or dashboard screens), but a third copy
+ * in `admin.ts` was one too many. Throws `ApiError` carrying the parsed
+ * `ErreurApi` so a caller can read `details[].champ` and map a field error onto
+ * its input.
+ */
+export async function requeteAuthJson<T>(
+  chemin: string,
+  init: RequestInit = {},
+): Promise<T> {
+  let reponse: Response;
+  try {
+    reponse = await authFetch(chemin, init);
+  } catch {
+    throw new ApiError(0, `Impossible de joindre l'API (${API_BASE_URL}${chemin}).`);
+  }
+  if (!reponse.ok) {
+    const erreur = await parseErreur(reponse);
+    throw new ApiError(
+      reponse.status,
+      erreur?.message ?? `Erreur API ${reponse.status} sur ${chemin}.`,
+      erreur,
+    );
+  }
+  // 204 No Content: a DELETE has nothing to parse, and JSON.parse("") throws.
+  if (reponse.status === 204) {
+    return undefined as T;
+  }
+  return (await reponse.json()) as T;
+}
+
+/**
  * `GET /auth/me` -- who the in-memory token (or, after a refresh, the
  * `refreshToken` cookie) belongs to. Used by `/exploitation/layout.tsx` to
  * decide whether the visitor may be here at all, and which role: the access

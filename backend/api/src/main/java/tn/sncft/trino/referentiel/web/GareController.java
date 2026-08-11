@@ -34,9 +34,11 @@ public class GareController {
     }
 
     @GetMapping
-    public PageDTO<GareDTO> lister(@RequestParam(defaultValue = "0") int page,
+    public PageDTO<GareDTO> lister(@RequestParam(required = false) String region,
+                                    @RequestParam(required = false) String q,
+                                    @RequestParam(defaultValue = "0") int page,
                                     @RequestParam(defaultValue = "20") int taille) {
-        Page<GareDTO> resultat = gareService.lister(page, taille);
+        Page<GareDTO> resultat = gareService.lister(region, q, page, taille);
         return new PageDTO<>(resultat.getContent(), resultat.getNumber(), resultat.getSize(), resultat.getTotalElements());
     }
 

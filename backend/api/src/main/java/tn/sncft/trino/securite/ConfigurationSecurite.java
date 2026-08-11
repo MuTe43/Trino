@@ -154,6 +154,18 @@ public class ConfigurationSecurite {
                         // list, which carries who declared what.
                         .requestMatchers(HttpMethod.GET, "/api/v1/incidents", "/api/v1/incidents/**")
                         .hasAnyRole("AGENT_CIRCULATION", "RESPONSABLE_EXPLOITATION")
+                        // User administration and the connection log: ADMINISTRATEUR only.
+                        // Paired with @PreAuthorize on the services (invariant 9) -- the URL
+                        // rule runs in the filter chain, ahead of @Valid on the request body,
+                        // so a forbidden caller with a malformed body still sees 403, not 400.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/utilisateurs", "/api/v1/utilisateurs/**")
+                        .hasRole("ADMINISTRATEUR")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/utilisateurs/**")
+                        .hasRole("ADMINISTRATEUR")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/utilisateurs", "/api/v1/utilisateurs/**")
+                        .hasRole("ADMINISTRATEUR")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/journal-connexions", "/api/v1/journal-connexions/**")
+                        .hasRole("ADMINISTRATEUR")
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(pointEntreeAuthentification())

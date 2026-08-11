@@ -105,3 +105,55 @@ and no idea the operation exists elsewhere.
 The matcher order is load-bearing — the resolution rule must precede the general
 `POST /incidents/**` rule, or any agent may resolve. `IncidentSecuriteTest` pins
 it, and was confirmed to fail (403 → 200) with the two swapped.
+
+## 10. The server generates account passwords, and calls them *initial*
+
+The admin console never lets an administrator choose a password for someone
+else. The server generates one, returns it exactly once — in the response to
+`POST /utilisateurs` or `POST /utilisateurs/{id}/mot-de-passe` — and stores only
+the BCrypt hash. There is no way to read it back, by design: an endpoint that
+could would be an endpoint that leaks every account.
+
+An admin-chosen password is worse than it looks. It travels to the new user over
+whatever channel the admin happens to use, it tends to be a pattern rather than a
+secret, and it is the same person's habit reused across the accounts they create.
+A generated one is none of those. The alphabet drops the ambiguous glyphs
+(`O 0 o l I 1`) because a human reads this aloud and retypes it.
+
+The field is `motDePasseInitial`, not `motDePasseTemporaire`. *Temporaire*
+promises a forced change on first login — a flag, an endpoint, a redirect, and a
+migration touching the four seeded demo accounts, which is a login path breaking
+mid-demo for no benefit inside this timeline. Naming it *temporary* while
+enforcing nothing would be a claim the system does not keep, and the next person
+to read the field name would trust it. It is a phase 9 candidate, recorded rather
+than half-built.
+
+The consequence to accept: losing the string means re-issuing, not recovering.
+That is the correct trade and the UI says so where it shows the password.
+
+## 11. An admin cannot lock themselves out, and the guard is the principal
+
+`PATCH /utilisateurs/{id}` refuses, with `409 CONFLIT`, an administrator
+deactivating their own account or moving their own role off `ADMINISTRATEUR`.
+Both end the same way: nobody can administer anything, and the only fix is a
+manual `UPDATE` against the database — during a demo, in front of the people
+being demoed to.
+
+The guard compares the target against the **authenticated principal's email**,
+never a hardcoded id. `utilisateur 1` is only the seeded demo admin; a second
+administrator created through this very console would be unguarded, and the one
+account most likely to be experimented with is the newest. The acceptance script
+reads its own id from `/auth/me` for the same reason.
+
+Deactivating someone else never deletes them. `journal_connexion` holds a plain
+`utilisateur_id` FK, and an audit trail with holes in it is not an audit trail.
+`refresh_token` holds one too, so the row is doubly undeletable — which is the
+design working, not an obstacle to route around.
+
+Deactivation takes effect on the next request. `FiltreJwt` re-reads the account
+on every authenticated request and leaves the context anonymous when `actif` is
+false, so an access token already issued stops working immediately rather than
+lasting out its 30 minutes. That costs one lookup per request and has since
+phase 1; it is worth writing down because the cheaper design — trusting the
+token's claims until it expires — is the one a reader assumes, and it would make
+"désactiver" a promise the console could not keep for half an hour.

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tn.sncft.trino.commun.dto.PageDTO;
+import tn.sncft.trino.referentiel.domaine.TypeTrain;
 import tn.sncft.trino.referentiel.dto.TrainCreateDTO;
 import tn.sncft.trino.referentiel.dto.TrainDTO;
 import tn.sncft.trino.referentiel.dto.TrainUpdateDTO;
@@ -34,9 +35,11 @@ public class TrainController {
     }
 
     @GetMapping
-    public PageDTO<TrainDTO> lister(@RequestParam(defaultValue = "0") int page,
+    public PageDTO<TrainDTO> lister(@RequestParam(required = false) TypeTrain type,
+                                     @RequestParam(required = false) Long ligneId,
+                                     @RequestParam(defaultValue = "0") int page,
                                      @RequestParam(defaultValue = "20") int taille) {
-        Page<TrainDTO> resultat = trainService.lister(page, taille);
+        Page<TrainDTO> resultat = trainService.lister(type, ligneId, page, taille);
         return new PageDTO<>(resultat.getContent(), resultat.getNumber(), resultat.getSize(), resultat.getTotalElements());
     }
 

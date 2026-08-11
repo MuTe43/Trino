@@ -474,3 +474,74 @@ export interface BucketRetardDTO {
   classe: ClasseRetard;
   courses: number;
 }
+
+// ---------------------------------------------------------------------------
+// Administration (phase 7)
+// Mirrors of referentiel/dto/TrainDTO and the iam DTOs. Every endpoint behind
+// these is ADMINISTRATEUR-only, enforced server-side by a URL rule AND
+// @PreAuthorize (invariant 9); the client never decides authorisation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Rolling stock. Mirrors `referentiel/dto/TrainDTO`. It has no status and no
+ * delay, and never will — those live on `Course` (invariant 1).
+ */
+export interface Train {
+  id: number;
+  numero: string;
+  nom: string | null;
+  type: TypeTrain;
+  /** Nullable: a trainset need not be assigned to a ligne. */
+  ligneId: number | null;
+  capacite: number | null;
+  vitesseMaxKmh: number | null;
+  actif: boolean;
+}
+
+/**
+ * Returned by `POST /utilisateurs` and `POST /utilisateurs/{id}/mot-de-passe`,
+ * and by nothing else.
+ *
+ * `motDePasseInitial` is the only moment the plaintext exists: the server keeps
+ * the BCrypt hash alone, so it cannot be read back afterwards — losing it means
+ * re-issuing, not recovering. Any screen showing it must say so.
+ *
+ * It is *initial*, not *temporaire*: there is no forced-change-on-first-login
+ * flow, so calling it temporary would promise something the system does not do.
+ */
+export interface UtilisateurCree extends Utilisateur {
+  motDePasseInitial: string;
+}
+
+/** Body of `POST /utilisateurs`. No password field — the server generates it. */
+export interface CorpsUtilisateurCreation {
+  email: string;
+  nom: string;
+  role: Role;
+}
+
+/** Body of `PATCH /utilisateurs/{id}`. Absent field means unchanged; email is
+ * immutable. Sending `actif: false` or a non-ADMINISTRATEUR `role` for your own
+ * account is refused with 409 CONFLIT. */
+export interface CorpsUtilisateurModification {
+  nom?: string;
+  role?: Role;
+  actif?: boolean;
+}
+
+/**
+ * One login attempt. Mirrors `iam/dto/JournalConnexionDTO`.
+ *
+ * `utilisateurId`/`utilisateurNom` are null when the attempted email matches no
+ * account — which is most of what a failed-login list is for.
+ */
+export interface JournalConnexion {
+  id: number;
+  utilisateurId: number | null;
+  utilisateurNom: string | null;
+  emailTente: string;
+  adresseIp: string | null;
+  userAgent: string | null;
+  succes: boolean;
+  horodatage: string;
+}

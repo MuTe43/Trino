@@ -6,7 +6,7 @@ narrative goes to `docs/RAPPORT-NOTES.md`, not here.
 
 ## Current phase
 
-Phase 6 done and verified. Phase 7 next.
+Phase 7 done, reviewed and verified. Phase 8 next.
 
 ## Done
 
@@ -19,146 +19,140 @@ Phase 6 done and verified. Phase 7 next.
 - **Phase 4** — the passenger portal, map, station board.
 - **Phase 5** — dashboards, exports, SSE multiplexing, backfill.
 - **Phase 6** — incidents, exploitation console, public header.
-  - Multi-channel SSE frame confirmed on **live** traffic (item 1).
-  - DB-backed tests **fail closed** instead of skipping (item 2).
-  - Public header over the map; `/affichage/{gareId}` stays chrome-free (item 3).
-  - `exploitation/{domaine,dto,repo,service,web,evenement}`: declare, edit,
-    resolve. `OUVERT→EN_COURS→RESOLU`, `OUVERT→RESOLU`; anything else — a
-    self-transition included — is `409 CONFLIT`.
-  - **Resolution is its own endpoint** (`POST /incidents/{id}/resolution`,
-    responsable only); `PATCH` refuses `RESOLU` for *every* role. Decision 9.
-  - The incident form also carries the agent's other two powers, `actionCourse`
-    and an explicit `causeRetard`, both through `MachineEtatCourse`.
-  - `TypeIncident.causeAssociee()` **suggests** and never overwrites.
-  - KPI incident tiles wired; `/rapports/incidents` + export entry.
+- **Phase 7** — the administrator console, `/admin/{,gares,lignes,trains,utilisateurs,journal}`.
+  - `ADMINISTRATEUR` had four use cases and no screen since phase 0; it has one now.
+  - **The server generates passwords**, returned once, never readable again. The
+    field is `motDePasseInitial`, not *temporaire* — there is no forced-change
+    flow, so *temporaire* would be a promise the system does not keep. Decision 10.
+  - **Self-lockout refused both ways** (409), compared against the authenticated
+    principal's email, never a hardcoded id. Decision 11.
+  - `GET /journal-connexions`, filling since phase 1 and unreadable until now.
+  - Référentiel filters `?region=&q=` / `?type=&ligneId=`, deferred since phase 0.
+  - All optional filters are **JPA Specifications**, never `:param is null` — that
+    pattern is the `could not determine data type of parameter $7` 500 of phase 6.
+  - `DELETE` of a referenced row → 409, the delete **flushed inside the try** or
+    the FK violation escapes to commit and is mislabelled a uniqueness conflict.
+  - One `TableauEditable` + one `DialogueEdition` serve all four resources.
 
 ## Migrations applied
 
 `V1__referentiel` · `V2__seed_reseau` · `V3__iam` · `V4__circulation` ·
 `V5__index_circulation` · `V6__backfill_quai_passage_gare` · `V7__incidents`.
 
-One migration this phase, numbered **V7** — the phase file first said `V6`,
-already taken (invariant 4); the user corrected it.
-
-## Verified
-
-`./mvnw test` **145 green, 0 skipped** (92 after phase 5). `npm run build`,
-`tsc --noEmit`, `eslint` all green.
-
-**Run it as `TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino ./mvnw test`.**
-The DB-backed tests now **fail** when Postgres is unreachable — measured: 2
-errors, 0 skipped, where it used to be 13 silent skips. Opt out explicitly with
-`-Dtrino.tests.sansDb=true` (or `TRINO_TESTS_SANS_DB=1`).
-
-Every command of the Acceptance section was run against the live API, twice —
-once before the verify fixes and once after:
-
-| # | Check | Result |
-|---|---|---|
-| 1 | agent login → token | pass |
-| 2 | declaration → id, `test -n "$ID"` | pass (see substitutions) |
-| 3 | `select cause_retard from course where id = 1` | `SIGNALISATION` |
-| 4 | agent `PATCH {"statut":"RESOLU"}` | `403` |
-| 5 | `grep -qE 'event: ?incident'` on `/stream/lignes/1` | `exit=0` |
-
-Substitutions, all documented: **8080 → 8081**, **`jq` → `node`**, **`psql` →
-`docker exec trino-db psql`** (no local client; the container is on 5433), and
-the request body sent from a **UTF-8 file**.
-
-**That last one is new.** Passed inline, `curl.exe` receives the accent of
-`bloqué` as a single CP1252 byte `e9` and Jackson rejects the body as invalid
-UTF-8 (`400`, empty `details`); written to a file by bash it is `c3 a9` and the
-request succeeds. Git Bash transcodes argv to the Windows ANSI codepage when it
-launches a native binary. A shell builtin does not cross that boundary, so
-`printf | xxd` shows correct UTF-8 and *disproves nothing* — the earlier handoff
-had the mechanism wrong on that basis. Environment only: a browser sends UTF-8.
-
-Also verified live: responsable `PATCH RESOLU` → 403 too; `POST /resolution`
-agent 403 / voyageur 403 / anonyme 401 / responsable 200; forbidden role +
-malformed body → **403, not 400**; gare-only incident reaching every ligne
-serving that gare; KPI tiles non-zero; incidents CSV/XLSX export with BOM and
-`;`, **0** ERROR lines in the API log; header present on `/` and `/gares/{id}`,
-absent on `/affichage/{id}`; `/exploitation/*` → 307 `/connexion`.
+**No migration in phase 7**, as the phase file requires.
 
 ## Fixed after review
 
-Two review passes; the second covered the frontend, which the first had not.
+The review found ten items; seven were fixed, three recorded below.
 
-- **A cancelled course could be resurrected from the console.**
-  `appliquerActionAgent` had no terminal-state guard, so `ANNULE →
-  ARRET_EXCEPTIONNEL` was accepted — and ARRET_EXCEPTIONNEL is deliberately
-  non-terminal, so the next ping re-derived the run to `EN_CIRCULATION`. Guarding
-  only `evaluer` guarded the feed and left the console as a way in. Now `409`.
-- **The console's ligne filter and the SSE routing disagreed.** The filter
-  matched `i.ligne.id` only, while a gare-only incident publishes on every ligne
-  serving that gare — so the console refreshed on a delta and then hid the row,
-  which reads as a lost declaration. `ligneId` now means "concerns this ligne" on
-  both sides.
-- **A validation error with nowhere to render.** `survenuAtPasseOuPresent` was
-  added to the DTO after the form was written; the key was stored and never
-  displayed, so a mistyped year gave "Le formulaire contient des erreurs." with
-  every field unmarked. Aliased onto the `survenuAt` field.
-- Earlier pass: `:param is null` → `could not determine data type of parameter
-  $7` (a **500 on the console's default view**); `resoluAt` stamped from
-  `HorlogeCirculation` (**−5.1 h** to resolution); `rs.wasNull()` read after two
-  later `getLong`s (every unresolved bucket reported **0.0 h**, "resolved
-  instantly"); self-transition answering 200 while resolution answered 409; a
-  gravité edit reaching no subscriber; `ligneId`/`courseId` never cross-checked;
-  the supervision map holding ~45 channels; no window guard on
-  `/rapports/incidents`; `Pageable` built in the controller.
-- **`StreamControllerTest.unSeulBattementParConnexion` was still flaky** and went
-  red during this verify. Phase 5 narrowed the race by measuring a delta; there
-  is no window left to shrink, because the scheduled `fixedRate` beat can land
-  between the two reads. Now compared between a four-channel and a one-channel
-  connection: a stray beat reaches both, so it cancels. Three consecutive runs
-  green, plus the full suite.
-- Nine files my scripted edits had rewritten LF → CRLF are back to LF;
-  `ServiceExport.java` reads as 39 changed lines instead of 249.
-  `CarteReseau.tsx` was CRLF before this phase and is left alone.
+- **A mixed-case email could never log in.** `creer` stored the address
+  lowercased, `login` looked it up as typed — so an account created as
+  `Prenom.Nom@SNCFT.tn` was unreachable with the address the admin handed over,
+  and every attempt was journalled with a null `utilisateurId`: an audit trail
+  claiming the email matched no account while the account existed. Invisible to a
+  green build because all four seeded accounts are already lowercase, and it sits
+  exactly on the phase's own browser walkthrough. `normaliserEmail` is now shared
+  by both paths; `UtilisateurServiceTest.loginNormaliseLEmailCommeCreer` pins it.
+  Measured after the fix: login with the typed casing **401 → 200**, journal
+  `utilisateurId` **null → 11**.
+- **A blank coordinate became (0, 0).** The gare form coerced with `?? 0`, and
+  `latitude` is `@NotNull` with no range check, so `0` was *accepted* — measured
+  201. The public map fits its initial bounds over every gare, so one station in
+  the Gulf of Guinea zooms the passenger map out to ocean. The form now sends
+  `null`: measured 400 with the error on `latitude`/`longitude`, which the dialog
+  renders on those inputs. `required` is on the inputs too — the asterisk alone
+  was decoration.
+- **`?? 0` / `?? ""` silently rewrote nullable columns.** All 39 seeded gares
+  carry a null `responsable`; any unrelated rename wrote `""` over it, and
+  clearing a count wrote 0 rather than null. Gares and lignes now match the
+  trains screen, which had it right — the inconsistency was inside one phase.
+- **The docs overstated deactivation.** `api-contract.md`, `decisions.md` and one
+  Javadoc all claimed an issued access token stayed valid for its remaining 30
+  minutes. `FiltreJwt` re-reads the account every request and leaves the context
+  anonymous when inactive, so it is immediate. The behaviour was right and the
+  documentation wrong, which is the direction that gets built upon.
+- Fake-bold `<strong>` (only weights 400/500 are loaded); missing tabular
+  numerals on the journal's two numeric columns, where the overview's copy of the
+  same table had them; and the edit dialog offering your own account roles the
+  server refuses with 409 — it now offers `ADMINISTRATEUR` only.
+
+## Verified
+
+`./mvnw test` **171 green, 0 failures, 0 errors, 0 skipped** (145 after phase 6;
++25 for phase 7's four new classes, +1 regression test). `npm run build`,
+`tsc --noEmit`, `eslint` green. No CRLF; no new dependency either side.
+
+**Run it as `TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino ./mvnw test`.**
+
+Every command of the Acceptance section run live against 8081, twice — before
+the review fixes and again after. **All pass**, with the two standing
+substitutions (8080→8081, `jq`→`node`); the phase file is unedited.
+
+| Check | Expected | Got |
+|---|---|---|
+| create → `motDePasseInitial` | non-empty | `EZv47EyUQjkKjd`, `exit=0` |
+| login before / after deactivation | 200 / 401 | 200 / 401 |
+| `GET /utilisateurs/{id}` has no password | OK | OK |
+| self-deactivation / self-demotion | 409 / 409 | 409 / 409 |
+| journal paginated | a total | 5 |
+| `gares?q=sous` / `trains?type=` | ≥1 / ≥1 | 2 / 12 |
+| `DELETE /lignes/1` | 409 | 409, message names what references it |
+| responsable on `/journal-connexions` | 403 | 403 |
+| *(added)* responsable + malformed body | 403 not 400 | 403 |
+
+**Browser walkthrough done** (frontend 3001 → API 8082, both since stopped, so
+the demo stack was never interrupted): created a user through the dialog, saw the
+one-time password, logged in as them, deactivated them **from the UI**, login
+refused; `q=sous` narrowed 39 gares to 2; renamed a gare and saw it on the public
+`/gares/33` page, then restored it; re-saved ligne 1 and its **43-point trace came
+back 43 points** — the carry-through the read-only preview depends on.
 
 ## Not verified
 
 - The map still has not been *seen* rendering: the in-app browser reports
-  `document.hidden` permanently true. Subscriptions, payloads, built CSS and
-  route table are verified; drawing is not. Unchanged since phase 4.
+  `document.hidden` permanently true. Unchanged since phase 4. The gare rename was
+  verified through the public page and endpoint, the same data path the map reads.
 
 ## Deferred
 
-- **Phase 7**: `EtatCirculationStore` eviction; `position_course` growth;
+- **Into phase 8** — `docs/phases/phase-8.md` was edited during phase 7 to carry
+  the missing `journal_connexion` indexes into `V8__notifications.sql`. **This
+  edit was not made by the session that wrote the code and needs the supervisor's
+  confirmation**; revert it if unwanted, but the index is genuinely absent and the
+  endpoint filters and sorts on `horodatage` and `utilisateur_id`.
+- **Phase 9 candidate** — forced password change on first login: a flag, an
+  endpoint and a redirect, and it would catch the four seeded demo accounts.
+- **Still open** — `EtatCirculationStore` eviction; `position_course` growth;
   `refresh_token` sweep; `FiltreJwt`/`FiltreCleIngestion` double-registered;
-  `.gitignore` misses `*.log`. **New:** `GET /incidents/ouverts` is unpaginated
-  by design — a supervision map must not hide an incident left open yesterday —
-  so it grows if incidents are never resolved.
-- **Unscheduled**: `/ingest/*` rate limit; référentiel query filters;
-  `TableauDepartsGare` has no periodic REST resync.
+  `.gitignore` misses `*.log`; `GET /incidents/ouverts` unpaginated by design;
+  `/ingest/*` rate limit; `TableauDepartsGare` has no periodic REST resync.
+- **Known and accepted, from the review** — `?du=` without `?au=` skips the
+  `PlageDates` window guard and scans unbounded (measured 200 on
+  `?du=1900-01-01`); a ligne whose stored trace has fewer than two points cannot
+  be renamed from the console, since the form resends the trace and
+  `@Size(min = 2)` rejects it (0 of 5 seeded lignes affected); `requeteAuthJson`
+  now lives in `auth.ts` but `incidents.ts` and `tableauBord.ts` keep their own
+  copies, left alone as out of scope.
 
 ## Standing deviations
 
 | Deviation | Why |
 |---|---|
-| `docker-compose.override.yml` publishes the db on **5433** | A `PostgreSQL_For_Odoo` service owns 5432 here. Same class as 8080→8081. |
-| `jq` and `psql` absent; `node` and `docker exec` used | Same URLs, same assertions, different clients. |
-| **Request bodies with accents sent from a UTF-8 file** | Git Bash transcodes argv to the Windows ANSI codepage for a native binary, so an inline accent reaches `curl.exe` as CP1252. Environment only. |
-| `IncidentService` reads repositories from four other modules | It needs course, gare, ligne and utilisateur to build one incident. Flagged by review; the alternative is a facade per module, judged not worth the indirection at this size. |
-| An agent's two extra powers live on the incident form | The phase grants them but names no endpoint and adds no course controller. The declaration *is* the reason for the cancellation. |
-| `impact` is `not null` | `domain-model.md` marks only `gare_id`, `ligne_id`, `course_id`, `resolu_at` nullable. Followed literally. |
-| Two check constraints beyond the doc (`resolu_at` biconditional, ≥1 location) | Recorded in `domain-model.md`. |
-| Earlier deviations from phases 2–5 | Unchanged. |
-
-## Open questions for the supervisor
-
-- Spec puts `Statut` on `Train`; we split `Train`/`Course`. Confirm.
-- Spec has no theoretical timetable entity; we added `Desserte`. Confirm.
-- Seed geometry is internally consistent, not surveyed. Confirm acceptable.
-- Which notification channel is reachable during the internship?
+| db on **5433**, API on **8081** | Unrelated services own 5432 and 8080 here. |
+| `jq`/`psql` absent; `node` and `docker exec` used | Same URLs, same assertions. |
+| Request bodies with accents sent from a UTF-8 file | Git Bash transcodes argv to the Windows ANSI codepage for a native binary. |
+| **The lignes screen has no "create"** | A new ligne needs a ≥2-point polyline and editing `trace` is out of scope by phase rule. Edit and delete only, stated in the UI. |
+| The ligne edit dialog **resends the loaded `trace` untouched** | `PUT` replaces the whole resource and requires ≥2 points; omitting it turns a rename into a 400 on a hidden field. |
+| **Emails are stored and matched lowercased** | One definition of "the same email" across `creer` and `login`. See the review fix above. |
+| A user row cannot be deleted at all | `journal_connexion` *and* `refresh_token` both hold an FK to it. Deactivation is the only removal, by design. |
+| Earlier deviations from phases 2–6 | Unchanged. |
 
 ## Running now
 
-Postgres `trino-db` on **5433**, API on **8081**, `next start` on 3000,
-simulator x20. History synthesised for **2026-07-26 → 2026-08-08**; 2026-08-09
-to 2026-08-11 are simulated days. Course 1201 is `ANNULE` by an agent action, so
-`trainsAnnules` = 1. Five demo incidents remain; rows created while testing were
-deleted.
+Postgres `trino-db` on **5433**, API on **8081** (restarted, carries phase 7 **and**
+the review fixes), `next start` on 3000, simulator x20. The database is back to the
+four seeded accounts — every account created while testing was removed, along with
+its journal and refresh-token rows.
 
 ```
 docker compose up -d db     # override publishes 5433

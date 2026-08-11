@@ -33,6 +33,104 @@ Codes: `VALIDATION_ECHOUEE` `NON_AUTHENTIFIE` `ACCES_REFUSE` `INTROUVABLE`
 Access token 30 min, refresh 7 days. HS256, secret from env. Roles map to
 Spring authorities as `ROLE_ADMINISTRATEUR` etc.
 
+## Utilisateurs
+
+`ADMINISTRATEUR` only, every verb, with both a URL rule and `@PreAuthorize`
+(invariant 9). `POST /utilisateurs` carries a validated body, so without the URL
+rule a forbidden caller sending a malformed payload would be told 400 —
+their payload was wrong — on an endpoint they were never allowed to touch.
+
+```
+GET   /utilisateurs?page=&taille=
+GET   /utilisateurs/{id}
+POST  /utilisateurs
+PATCH /utilisateurs/{id}
+POST  /utilisateurs/{id}/mot-de-passe
+```
+
+**The server generates the password; the admin never chooses one.**
+`POST /utilisateurs` takes `{email, nom, role}` and no password field at all.
+
+```json
+{
+  "id": 9, "email": "test@sncft.tn", "nom": "Test",
+  "role": "AGENT_CIRCULATION", "actif": true,
+  "motDePasseInitial": "Xk7fRq2mHt9v"
+}
+```
+
+`motDePasseInitial` appears in exactly two responses — this one and
+`POST /utilisateurs/{id}/mot-de-passe` — and nowhere else, ever. Only the BCrypt
+hash is stored, so it is unreadable afterwards; `UtilisateurDTO`, returned by
+every other endpoint, carries no password field of any kind. Losing it means
+re-issuing, not recovering.
+
+It is called **initial**, not *temporaire*. There is no forced-change-on-first-
+login flow, so *temporaire* would be a claim the system does not keep. That flow
+is a flag, an endpoint and a redirect, and it would catch the four seeded demo
+accounts — a phase 9 candidate, deliberately not built here. No self-service
+reset, no email delivery.
+
+`PATCH` is a partial update — `{nom?, role?, actif?}`, an absent field means
+unchanged. Email is immutable. Two cases answer `409 CONFLIT`:
+
+- deactivating **your own** account,
+- changing **your own** role away from `ADMINISTRATEUR`.
+
+Both lock you out just as thoroughly, and a demo does not survive it. The guard
+compares against the authenticated principal's email, never a hardcoded id.
+Re-using a taken email is `409` too.
+
+Deactivating never deletes: `journal_connexion` references the row, and audit
+trails do not get holes.
+
+It takes effect on the **next request**, not when the access token expires.
+`FiltreJwt` re-reads the account on every authenticated request and leaves the
+context anonymous when `actif` is false, so a token already in someone's hands
+stops working at once; `/auth/login` and `/auth/refresh` refuse it as well. The
+price is one lookup per authenticated request, paid since phase 1.
+
+Email is matched case-insensitively: `POST /utilisateurs` stores the address
+lowercased and `/auth/login` normalises the same way before looking it up.
+Without both halves, an account created as `Prenom.Nom@SNCFT.tn` could never be
+logged into with the address the administrator typed and handed over, and every
+attempt would be journalled with a null `utilisateurId` — an audit trail saying
+the email matches no account when it does.
+
+## Journal de connexions
+
+```
+GET /journal-connexions?succes=&utilisateurId=&du=&au=&page=&taille=
+```
+
+`ADMINISTRATEUR` only. `/auth/login` has been writing this table on every
+attempt, successful or not, since phase 1, and nothing could read it before
+phase 7.
+
+```json
+{
+  "id": 812, "utilisateurId": 2, "utilisateurNom": "Agent Sousse",
+  "emailTente": "agent@sncft.tn", "adresseIp": "127.0.0.1",
+  "userAgent": "Mozilla/5.0 ...", "succes": true,
+  "horodatage": "2026-08-11T07:41:02Z"
+}
+```
+
+`utilisateurId` and `utilisateurNom` are null for an attempt on an email that
+matches no account — which is most of what a failed-login list is for.
+
+Every filter is optional and independent. `du`/`au` are plain dates bucketed in
+`Africa/Tunis` (invariant 6), `au` inclusive: the bound handed to the database is
+the start of the following day. When both are present, the shared `PlageDates`
+window guard applies, same as the reports. Rows are sorted `horodatage` desc then
+`id` desc so paging stays deterministic when several attempts share a timestamp.
+
+Filters are composed as JPA **Specifications**, not as `:param is null` tests in
+a `@Query`. That pattern binds an untyped null and Postgres answers
+`could not determine data type of parameter $7` — a 500 on the default,
+unfiltered view, which is the first thing anyone opens. Phase 6 shipped exactly
+that bug once already.
+
 ## Référentiel
 
 Read is public. Write is `ADMINISTRATEUR` only.
@@ -47,6 +145,20 @@ GET    /trains?type=&ligneId=       GET /trains/{id}   (same write verbs)
 ```
 
 Paged responses: `{contenu: [...], page, taille, total}`.
+
+The query filters — `region` and `q` on gares, `type` and `ligneId` on trains —
+were declared in phase 0 and only built in phase 7, when the admin lists became
+the consumer that justified them. `q` matches `nom` or `code`,
+case-insensitively, on a substring. All of them are optional and a blank value
+behaves as absent, so `?q=` is not a filter for the empty string. Same
+Specification construction, for the same reason, as the connection journal above.
+
+`DELETE` on a gare, a ligne or a train still referenced by a course, a desserte
+or rolling stock answers `409 CONFLIT` with a message naming what points at it.
+The delete is flushed inside the service so the foreign-key violation is caught
+there rather than at commit — the generic `DataIntegrityViolationException`
+branch reports a uniqueness conflict, which is the wrong story for an FK, and an
+uncaught one is a 500 with a stack trace.
 
 ## Circulation — read
 

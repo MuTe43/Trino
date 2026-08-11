@@ -16,8 +16,19 @@ those screens expose.
 ## Backend — three gaps
 
 1. **`UtilisateurController` is read-only.** Add create, update (name, role),
-   activate/deactivate, and an admin-set temporary password. No self-service
-   reset, no email flow — out of scope.
+   activate/deactivate, and password re-issue.
+
+   The **server generates** the password; the admin never chooses one. It is
+   returned exactly once, in the response to `POST /utilisateurs` or
+   `POST /utilisateurs/{id}/mot-de-passe`, and is unreadable afterwards — only
+   the BCrypt hash is stored. Call the field `motDePasseInitial`, not
+   *temporaire*: there is no forced-change-on-first-login flow, so calling it
+   temporary would be a claim the system does not keep. That flow is a flag, an
+   endpoint and a redirect, and it risks catching the four seeded demo accounts
+   and breaking the login path mid-demo — record it as a phase 9 candidate, do
+   not build it here.
+
+   No self-service reset, no email delivery.
 2. **No endpoint for the connection journal.** `GET /journal-connexions?
    succes=&utilisateurId=&du=&au=&page=&taille=`, `ADMINISTRATEUR` only. The
    table has been filling since phase 1 and nothing can read it.
@@ -45,6 +56,9 @@ frontend/src/components/admin/TableauEditable.tsx         one component, four us
 frontend/src/components/admin/DialogueEdition.tsx
 ```
 
+Write the **Utilisateurs** and **Journal de connexions** sections into
+`api-contract.md` as part of this phase — neither exists there today.
+
 No migration this phase.
 
 ## Rules
@@ -60,8 +74,10 @@ No migration this phase.
   a readable message, never a foreign-key stack trace.
 - Deactivating a user does not delete them — the connection journal references
   them, and audit trails do not get holes.
-- An admin cannot deactivate or demote their own account. Lock yourself out once
-  during a demo and you do not get back in.
+- An admin cannot deactivate their own account **or change their own role away
+  from `ADMINISTRATEUR`**. Both lock you out just as thoroughly. The guard
+  compares against the authenticated principal, never a hardcoded id — the `1`
+  in the acceptance below is only the demo admin.
 - Design direction from `phase-4.md` applies. Dense tables, tabular numerals on
   every number, hairline borders. Invariant 8 on any status colour.
 
@@ -71,20 +87,38 @@ No migration this phase.
 ADM=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"admin@sncft.tn","motDePasse":"Trino2026!"}' | jq -r .accessToken)
 
-# user management round trip
-UID=$(curl -s -X POST localhost:8080/api/v1/utilisateurs -H "Authorization: Bearer $ADM" \
+# user management round trip — capture the one-time password from the response
+CREATED=$(curl -s -X POST localhost:8080/api/v1/utilisateurs -H "Authorization: Bearer $ADM" \
   -H 'Content-Type: application/json' \
-  -d '{"email":"test@sncft.tn","nom":"Test","role":"AGENT_CIRCULATION"}' | jq -r .id)
+  -d '{"email":"test@sncft.tn","nom":"Test","role":"AGENT_CIRCULATION"}')
+UID=$(echo "$CREATED" | jq -r .id)
+MDP=$(echo "$CREATED" | jq -r .motDePasseInitial)
+test -n "$MDP" && test "$MDP" != "null"
+
+# it works before deactivation
+curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"test@sncft.tn\",\"motDePasse\":\"$MDP\"}"        # expect 200
+
+# and never again after
 curl -s -X PATCH localhost:8080/api/v1/utilisateurs/$UID -H "Authorization: Bearer $ADM" \
   -H 'Content-Type: application/json' -d '{"actif":false}'
 curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"test@sncft.tn","motDePasse":"..."}'    # expect 401, account inactive
+  -d "{\"email\":\"test@sncft.tn\",\"motDePasse\":\"$MDP\"}"        # expect 401
 
-# self-lockout is refused
-curl -s -o /dev/null -w '%{http_code}' -X PATCH localhost:8080/api/v1/utilisateurs/1 \
+# the password is not readable after creation
+curl -s -H "Authorization: Bearer $ADM" localhost:8080/api/v1/utilisateurs/$UID \
+  | grep -qi 'motDePasse' && echo FAIL || echo OK
+
+# self-lockout is refused, both ways — MOI is the caller's own id, not a literal
+MOI=$(curl -s -H "Authorization: Bearer $ADM" localhost:8080/api/v1/auth/me | jq -r .id)
+curl -s -o /dev/null -w '%{http_code}' -X PATCH localhost:8080/api/v1/utilisateurs/$MOI \
   -H "Authorization: Bearer $ADM" -H 'Content-Type: application/json' \
   -d '{"actif":false}'                                  # expect 409
+curl -s -o /dev/null -w '%{http_code}' -X PATCH localhost:8080/api/v1/utilisateurs/$MOI \
+  -H "Authorization: Bearer $ADM" -H 'Content-Type: application/json' \
+  -d '{"role":"VOYAGEUR"}'                              # expect 409
 
 # journal is readable and paginated
 curl -s -H "Authorization: Bearer $ADM" \

@@ -4,10 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tn.sncft.trino.commun.ConflitException;
 import tn.sncft.trino.commun.PageableUtils;
 import tn.sncft.trino.commun.RessourceIntrouvableException;
 import tn.sncft.trino.referentiel.domaine.Desserte;
@@ -88,7 +90,16 @@ public class LigneService {
     @PreAuthorize("hasRole('ADMINISTRATEUR')")
     public void supprimer(Long id) {
         Ligne ligne = trouverEntiteParId(id);
-        ligneRepository.delete(ligne);
+        try {
+            ligneRepository.delete(ligne);
+            // Forces the FK check now, inside the try -- without it the
+            // violation only surfaces at commit, outside this catch.
+            ligneRepository.flush();
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflitException(
+                    "Impossible de supprimer la ligne " + id
+                            + " : elle est référencée par des courses, des trains ou une desserte.");
+        }
         publicateurEvenements.publishEvent(new LigneModifiee(id));
     }
 

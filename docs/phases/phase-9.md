@@ -21,6 +21,33 @@ docs/RAPPORT-NOTES.md                                     material for the repor
 scripts/demo.sh                                           reset + seed + accelerate
 ```
 
+## Sweep-up — carried from phases 3 through 7
+
+Each was correctly deferred; this is where they land. None is large.
+
+- **`?du=` without `?au=` skips the `PlageDates` window guard** and scans
+  unbounded — measured 200 on `?du=1900-01-01`. Require both or neither.
+- **`EtatCirculationStore` is evicted only on `TERMINUS_ATTEINT`**, so runs
+  ending `ANNULE` or `ARRET_EXCEPTIONNEL` hold their window until restart.
+- **`position_course` grows unbounded** (~30 rows/tick). Document a retention
+  window; a partitioned table is out of scope.
+- **`refresh_token` has no expiry sweep.** A scheduled delete of expired and
+  revoked rows.
+- **`FiltreJwt` / `FiltreCleIngestion` are bare `Filter` beans**, so Boot also
+  auto-registers them in the container chain. `FilterRegistrationBean
+  .setEnabled(false)` on each.
+- **`/ingest/*` rate limit** (120/min/key), specified in `api-contract.md` and
+  never built.
+- **`.gitignore` misses `*.log`.**
+- **`requeteAuthJson` has three copies** — `auth.ts` holds the shared one;
+  `incidents.ts` and `tableauBord.ts` still carry their own.
+- **`TableauDepartsGare` has no periodic REST resync**, unlike the kiosk. A
+  dropped delta leaves it stale until navigation.
+
+Explicitly **not** doing: forced password change on first login. It would catch
+the four seeded demo accounts and risks breaking the login path on demo day.
+Record it as future work in the report instead.
+
 ## Tests
 
 Do not chase coverage. Four things are worth testing and the rest is not:

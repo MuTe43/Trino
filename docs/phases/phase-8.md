@@ -15,7 +15,20 @@ work, two that are stubs, and one screen to configure the rules.**
 
 ## Domain
 
-New tables, one migration `V8__notifications.sql` (phase 6 takes V7 for incidents):
+New tables, one migration `V8__notifications.sql` (phase 6 takes V7 for incidents).
+
+**Carry one index in with it.** Phase 7 built `GET /journal-connexions`, which
+filters and sorts on `horodatage` and `utilisateur_id`, but that phase was
+forbidden a migration so the index was never created. The table has been
+gathering a row per login attempt since phase 1 and only grows. Add it here
+rather than leaving it for phase 9 — this is the next migration either way:
+
+```sql
+create index idx_journal_horodatage on journal_connexion (horodatage desc);
+create index idx_journal_utilisateur on journal_connexion (utilisateur_id, horodatage desc);
+```
+
+Now the notification tables:
 
 **abonnement** — who wants to hear about what.
 `id` · `utilisateur_id` FK null · `jeton_anonyme` varchar(64) null ·
