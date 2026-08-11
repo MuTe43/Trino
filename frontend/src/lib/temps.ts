@@ -29,3 +29,49 @@ const formateurHorloge = new Intl.DateTimeFormat("fr-FR", {
 export function formaterHorloge(date: Date): string {
   return formateurHorloge.format(date);
 }
+
+const formateurDateHeure = new Intl.DateTimeFormat("fr-FR", {
+  timeZone: ZONE_RESEAU,
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** `DD/MM/YYYY HH:MM` in network time -- the incidents console spans several
+ * days, so a bare `HH:MM` would be ambiguous about which day. */
+export function formaterDateHeure(iso: string): string {
+  return formateurDateHeure.format(new Date(iso));
+}
+
+/**
+ * Africa/Tunis has had no fixed daylight-saving shift since 2005 (see the
+ * dashboard's date-range comment), so its UTC offset is the constant below
+ * year-round. Used to turn a `datetime-local` input -- a naive wall-clock
+ * string with no timezone of its own -- into the UTC instant the API expects,
+ * without ever trusting the browser's own timezone (invariant 6).
+ */
+const DECALAGE_TUNIS = "+01:00";
+
+/** `"YYYY-MM-DDTHH:mm"` (an `<input type="datetime-local">` value), read as
+ * Africa/Tunis wall-clock time, to a UTC ISO-8601 instant. */
+export function versIsoDepuisLocalTunis(valeurInputLocal: string): string {
+  return new Date(`${valeurInputLocal}:00${DECALAGE_TUNIS}`).toISOString();
+}
+
+/** Today's Africa/Tunis instant, formatted for a `datetime-local` input's
+ * default value -- never `new Date().toISOString().slice(...)`, which is UTC. */
+export function maintenantPourInputLocalTunis(): string {
+  const parties = new Intl.DateTimeFormat("en-CA", {
+    timeZone: ZONE_RESEAU,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const valeur = (type: string) => parties.find((p) => p.type === type)?.value ?? "00";
+  return `${valeur("year")}-${valeur("month")}-${valeur("day")}T${valeur("hour")}:${valeur("minute")}`;
+}

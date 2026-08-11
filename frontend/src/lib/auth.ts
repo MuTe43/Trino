@@ -121,3 +121,25 @@ export async function authFetch(
 
   return response;
 }
+
+/**
+ * `GET /auth/me` -- who the in-memory token (or, after a refresh, the
+ * `refreshToken` cookie) belongs to. Used by `/exploitation/layout.tsx` to
+ * decide whether the visitor may be here at all, and which role: the access
+ * token itself is lost on a page refresh (kept in memory only, invariant-
+ * adjacent choice noted above), so a role check cannot just decode a claim
+ * client-side -- it has to ask the server. Returns `null` rather than
+ * throwing on any failure (401 included): the caller treats that as "not
+ * authenticated" and redirects, same convention as `refreshAccessToken`.
+ */
+export async function chargerUtilisateurCourant(): Promise<Utilisateur | null> {
+  try {
+    const response = await authFetch("/auth/me");
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as Utilisateur;
+  } catch {
+    return null;
+  }
+}

@@ -8,19 +8,22 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { GeoJSONSource, Map as CarteMapLibre, Marker as MarqueurMapLibre } from "maplibre-gl";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
-import { listerCourses, listerGares, listerLignes } from "@/lib/api";
+import { chargerToutesPages, listerCourses, listerGares, listerLignes } from "@/lib/api";
+import { listerIncidentsOuverts } from "@/lib/incidents";
 import { useFluxSse } from "@/lib/sse";
-import { styleStatut } from "@/lib/couleurs";
-import { formaterHeure } from "@/lib/temps";
+import { libelleTypeIncident, styleGravite, styleStatut } from "@/lib/couleurs";
+import { formaterDateHeure, formaterHeure } from "@/lib/temps";
 import { MarqueurTrain } from "./MarqueurTrain";
+import { MarqueurIncident, type IncidentCarte } from "./MarqueurIncident";
 import type {
   CourseResumeDTO,
+  EvenementIncident,
   EvenementPosition,
   EvenementRetard,
   EvenementStatut,
   Gare,
+  IncidentDTO,
   LigneDTO,
-  PageDTO,
   StatutCourse,
 } from "@/lib/types";
 
@@ -44,27 +47,6 @@ const STATUTS_AFFICHES_SUR_CARTE = new Set<StatutCourse>([
 /** Today's date in Africa/Tunis, as the yyyy-MM-dd the API's `date` param expects. */
 function dateDuJourTunis(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Tunis" }).format(new Date());
-}
-
-/** Pages through a listing endpoint until every row is collected. Lignes and
- * gares are both small, fixed référentiel tables (~5 and ~40 rows), but
- * pagination is clamped server-side, so a single oversized `taille` is not
- * guaranteed to return everything in one page. */
-async function chargerTout<T>(
-  page: (p: number, taille: number) => Promise<PageDTO<T>>,
-  taille = 100,
-): Promise<T[]> {
-  const resultat: T[] = [];
-  let p = 0;
-  for (;;) {
-    const reponse = await page(p, taille);
-    resultat.push(...reponse.contenu);
-    if (reponse.contenu.length === 0 || resultat.length >= reponse.total) {
-      break;
-    }
-    p += 1;
-  }
-  return resultat;
 }
 
 /**
@@ -157,13 +139,136 @@ function reducerCourses(etat: EtatCourses, action: ActionCourses): EtatCourses {
  * per ligne without breaking the rules of hooks (the ligne count is dynamic,
  * so the hook cannot be called in a loop inside CarteReseau itself). Keyed by
  * ligne id in the parent, so mounting/unmounting tracks the visible lignes
- * one-to-one and each channel closes on unmount exactly once. */
-function CanalSseLigne({ ligneId, dispatch }: { ligneId: number; dispatch: Dispatch<ActionCourses> }) {
+ * one-to-one and each channel closes on unmount exactly once.
+ *
+ * `onIncident` is only ever passed in supervision mode (see `CarteReseau`'s
+ * `supervisionIncidents` prop) -- the public map never asks for it, so it
+ * never opens the incidents endpoint's auth dependency.
+ *
+ * The ligne channels alone are enough to see every incident on the network:
+ * `DiffuseurIncident` fans a gare-attached incident out to every ligne that
+ * serves that gare (via desserte), so a gare-only incident (`ligneId: null`
+ * on the payload) still arrives here, on whichever ligne(s) call at that
+ * gare. `gare:{id}` still carries it too -- that channel exists for the
+ * station board, which watches one gare -- but subscribing to all ~40 of
+ * them here as well would be a de-facto global channel under a different
+ * name, exactly what invariant 5 rules out, and one this component does not
+ * need. Do not key any incident handling off `evenement.ligneId` being
+ * non-null: it is legitimately null for a gare-only incident even on this
+ * channel. */
+function CanalSseLigne({
+  ligneId,
+  dispatch,
+  onIncident,
+}: {
+  ligneId: number;
+  dispatch: Dispatch<ActionCourses>;
+  onIncident?: (evenement: EvenementIncident) => void;
+}) {
   useFluxSse(`ligne:${ligneId}`, {
     onPosition: (evenement) => dispatch({ type: "POSITION", evenement }),
     onStatut: (evenement) => dispatch({ type: "STATUT", evenement }),
     onRetard: (evenement) => dispatch({ type: "RETARD", evenement }),
+    onIncident,
   });
+  return null;
+}
+
+type EtatIncidents = Map<number, IncidentCarte>;
+
+type ActionIncidents =
+  | { type: "INIT_INCIDENTS"; incidents: IncidentDTO[] }
+  | { type: "INCIDENT"; evenement: EvenementIncident };
+
+/** `IncidentDTO` (REST snapshot) carries no coordinates -- only the SSE delta
+ * does (see `EvenementIncident`'s doc comment in types.ts). Normalised here so
+ * the reducer and the marker layer only ever handle one shape. */
+function incidentCarteDepuisDTO(dto: IncidentDTO): IncidentCarte {
+  return {
+    id: dto.id,
+    type: dto.type,
+    gravite: dto.gravite,
+    statut: dto.statut,
+    description: dto.description,
+    survenuAt: dto.survenuAt,
+    ligneId: dto.ligne?.id ?? null,
+    gareId: dto.gare?.id ?? null,
+    courseId: dto.course?.id ?? null,
+    latitude: null,
+    longitude: null,
+  };
+}
+
+function incidentCarteDepuisEvenement(evenement: EvenementIncident): IncidentCarte {
+  return {
+    id: evenement.incidentId,
+    type: evenement.type,
+    gravite: evenement.gravite,
+    statut: evenement.statut,
+    description: evenement.description,
+    survenuAt: evenement.survenuAt,
+    ligneId: evenement.ligneId,
+    gareId: evenement.gareId,
+    courseId: evenement.courseId,
+    latitude: evenement.latitude,
+    longitude: evenement.longitude,
+  };
+}
+
+/**
+ * A resolved incident drops off the supervision map outright -- `ouverts()`
+ * never returns it again either, so keeping a greyed-out marker around would
+ * only ever be wrong the moment the page reloads. Anything else upserts.
+ */
+function reducerIncidents(etat: EtatIncidents, action: ActionIncidents): EtatIncidents {
+  switch (action.type) {
+    case "INIT_INCIDENTS": {
+      const suivant: EtatIncidents = new Map();
+      action.incidents.forEach((dto) => suivant.set(dto.id, incidentCarteDepuisDTO(dto)));
+      return suivant;
+    }
+    case "INCIDENT": {
+      const suivant = new Map(etat);
+      if (action.evenement.statut === "RESOLU") {
+        suivant.delete(action.evenement.incidentId);
+      } else {
+        suivant.set(action.evenement.incidentId, incidentCarteDepuisEvenement(action.evenement));
+      }
+      return suivant;
+    }
+    default:
+      return etat;
+  }
+}
+
+interface Coordonnee {
+  lon: number;
+  lat: number;
+}
+
+/**
+ * Where to plant an incident's marker: the coordinates the event already
+ * carries (server-computed, most authoritative) if present, else the gare it
+ * is attached to, else the last known position of the course it is attached
+ * to. Null when none apply -- a ligne-wide incident with no positioned course
+ * has no point, and the caller must list it rather than invent one.
+ */
+function positionIncident(
+  incident: IncidentCarte,
+  gares: Gare[],
+  courses: Map<number, CourseResumeDTO>,
+): Coordonnee | null {
+  if (incident.latitude !== null && incident.longitude !== null) {
+    return { lon: incident.longitude, lat: incident.latitude };
+  }
+  if (incident.gareId !== null) {
+    const gare = gares.find((g) => g.id === incident.gareId);
+    if (gare) return { lon: gare.longitude, lat: gare.latitude };
+  }
+  if (incident.courseId !== null) {
+    const course = courses.get(incident.courseId);
+    if (course?.position) return { lon: course.position.longitude, lat: course.position.latitude };
+  }
   return null;
 }
 
@@ -222,15 +327,85 @@ function PanneauDetail({ course, onFermer }: { course: CourseResumeDTO; onFermer
   );
 }
 
+function PanneauDetailIncident({
+  incident,
+  gares,
+  onFermer,
+}: {
+  incident: IncidentCarte;
+  gares: Gare[];
+  onFermer: () => void;
+}) {
+  useEffect(() => {
+    function surTouche(e: globalThis.KeyboardEvent) {
+      if (e.key === "Escape") onFermer();
+    }
+    document.addEventListener("keydown", surTouche);
+    return () => document.removeEventListener("keydown", surTouche);
+  }, [onFermer]);
+
+  const style = styleGravite(incident.gravite);
+  const gare = incident.gareId !== null ? gares.find((g) => g.id === incident.gareId) : undefined;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Détail de l'incident"
+      className="fixed inset-x-0 bottom-0 z-20 border-t border-filet bg-papier p-4 sm:absolute sm:inset-x-auto sm:left-4 sm:bottom-4 sm:w-96 sm:rounded-carte sm:border"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className={["inline-flex items-center rounded-controle border px-2 py-0.5 text-sm", style.texte, style.bordure].join(" ")}>
+            {style.etiquette}
+          </p>
+          <p className="mt-1 font-condensee text-base leading-tight">
+            {libelleTypeIncident(incident.type)}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onFermer}
+          aria-label="Fermer le détail"
+          className="rounded-controle border border-filet px-2 py-1 text-sm text-ardoise-700"
+        >
+          Fermer
+        </button>
+      </div>
+
+      <p className="mt-2 text-sm text-encre">{incident.description}</p>
+      <p className="mt-2 text-xs text-ardoise-400">
+        Signalé le {formaterDateHeure(incident.survenuAt)}
+        {gare ? ` · ${gare.nom}` : ""}
+      </p>
+
+      {incident.courseId !== null && (
+        <Link href={`/trains/${incident.courseId}`} className="mt-3 inline-block text-sm text-sncft-bleu">
+          Voir la fiche du train concerné
+        </Link>
+      )}
+    </div>
+  );
+}
+
 /**
  * The network map: OSM raster tiles, ligne traces and gare dots as quiet
  * chrome, trains as the only saturated colour. Fetches the day's running and
  * delayed courses once, then keeps them live over one SSE channel per ligne.
+ *
+ * `supervisionIncidents` turns on the exploitation console's superset: open
+ * incidents load from `/incidents/ouverts`, stay live via the same ligne
+ * channels already open for course tracking (`DiffuseurIncident` fans a
+ * gare-attached incident out to every ligne serving that gare, so no
+ * separate gare subscription is needed here -- see `CanalSseLigne`'s doc
+ * comment), and render as gravité-coloured pins alongside the trains. Off by
+ * default -- the public map must not gain a bearer-token dependency or
+ * channels it never asked for.
  */
-export function CarteReseau() {
+export function CarteReseau({ supervisionIncidents = false }: { supervisionIncidents?: boolean } = {}) {
   const conteneurRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<CarteMapLibre | null>(null);
   const marqueursRef = useRef<Map<number, { marker: MarqueurMapLibre; root: Root }>>(new Map());
+  const marqueursIncidentsRef = useRef<Map<number, { marker: MarqueurMapLibre; root: Root }>>(new Map());
   const ajusteRef = useRef(false);
 
   const [carteChargee, setCarteChargee] = useState(false);
@@ -238,7 +413,9 @@ export function CarteReseau() {
   const [lignesVisibles, setLignesVisibles] = useState<number[]>([]);
   const [gares, setGares] = useState<Gare[]>([]);
   const [courses, dispatch] = useReducer(reducerCourses, new Map<number, CourseResumeDTO>());
+  const [incidents, dispatchIncidents] = useReducer(reducerIncidents, new Map<number, IncidentCarte>());
   const [selectionId, setSelectionId] = useState<number | null>(null);
+  const [incidentSelectionneId, setIncidentSelectionneId] = useState<number | null>(null);
   const [erreurChargement, setErreurChargement] = useState<string | null>(null);
 
   // Create the map once.
@@ -283,8 +460,8 @@ export function CarteReseau() {
       try {
         const date = dateDuJourTunis();
         const [lignesChargees, garesChargees, instantane] = await Promise.all([
-          chargerTout((p, t) => listerLignes(p, t)),
-          chargerTout((p, t) => listerGares(p, t)),
+          chargerToutesPages((p, t) => listerLignes(p, t)),
+          chargerToutesPages((p, t) => listerGares(p, t)),
           chargerInstantane(date),
         ]);
         if (annule) return;
@@ -301,6 +478,26 @@ export function CarteReseau() {
       annule = true;
     };
   }, []);
+
+  // Supervision mode's own snapshot: open incidents, loaded separately from
+  // lignes/gares/courses above so that a caller without the auth needed for
+  // `/incidents/ouverts` (i.e. the public map, which never sets this prop)
+  // never even attempts the call, and so that a failure here never blocks the
+  // train map from loading.
+  useEffect(() => {
+    if (!supervisionIncidents) return;
+    let annule = false;
+    listerIncidentsOuverts()
+      .then((incidentsOuverts) => {
+        if (!annule) dispatchIncidents({ type: "INIT_INCIDENTS", incidents: incidentsOuverts });
+      })
+      .catch(() => {
+        // Non-blocking: the map still works for course tracking without it.
+      });
+    return () => {
+      annule = true;
+    };
+  }, [supervisionIncidents]);
 
   /**
    * Track which lignes are actually on screen, and subscribe only to those.
@@ -437,7 +634,13 @@ export function CarteReseau() {
           marker={entree.marker}
           course={course}
           selectionne={selectionId === course.id}
-          onSelectionner={setSelectionId}
+          onSelectionner={(id) => {
+            setSelectionId(id);
+            // The two detail panels sit in opposite corners (see the return
+            // below) precisely so they never have to fight for the same
+            // space, but only one is ever useful at a time.
+            setIncidentSelectionneId(null);
+          }}
         />,
       );
     });
@@ -463,7 +666,78 @@ export function CarteReseau() {
     };
   }, []);
 
+  // Create/update/remove one marker per positioned incident. Supervision mode
+  // only -- `incidents` stays empty otherwise, so this is a no-op loop for
+  // the public map.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !carteChargee || !supervisionIncidents) return;
+    const marqueurs = marqueursIncidentsRef.current;
+    const idsVus = new Set<number>();
+
+    incidents.forEach((incident) => {
+      const position = positionIncident(incident, gares, courses);
+      if (!position) return; // no point -- listed in the panel instead
+      idsVus.add(incident.id);
+
+      let entree = marqueurs.get(incident.id);
+      if (!entree) {
+        const element = document.createElement("div");
+        const marker = new maplibregl.Marker({ element, anchor: "center" })
+          .setLngLat([position.lon, position.lat])
+          .addTo(map);
+        entree = { marker, root: createRoot(element) };
+        marqueurs.set(incident.id, entree);
+      } else {
+        entree.marker.setLngLat([position.lon, position.lat]);
+      }
+
+      entree.root.render(
+        <MarqueurIncident
+          incident={incident}
+          selectionne={incidentSelectionneId === incident.id}
+          onSelectionner={(id) => {
+            setIncidentSelectionneId(id);
+            setSelectionId(null);
+          }}
+        />,
+      );
+    });
+
+    marqueurs.forEach((entree, id) => {
+      if (!idsVus.has(id)) {
+        entree.marker.remove();
+        entree.root.unmount();
+        marqueurs.delete(id);
+      }
+    });
+  }, [incidents, carteChargee, supervisionIncidents, gares, courses, incidentSelectionneId]);
+
+  // Unmount cleanup for incident markers, mirroring the course markers' own.
+  useEffect(() => {
+    const marqueurs = marqueursIncidentsRef.current;
+    return () => {
+      marqueurs.forEach(({ marker, root }) => {
+        marker.remove();
+        root.unmount();
+      });
+      marqueurs.clear();
+    };
+  }, []);
+
   const selectionCourse = selectionId !== null ? (courses.get(selectionId) ?? null) : null;
+  const incidentSelectionne =
+    incidentSelectionneId !== null ? (incidents.get(incidentSelectionneId) ?? null) : null;
+
+  // Full network coverage in supervision mode rather than the public map's
+  // viewport-based subset: the network is small (~5 lignes) and a
+  // responsable must never miss an incident because the map happened to be
+  // panned elsewhere.
+  const canauxLignes = supervisionIncidents ? lignes.map((ligne) => ligne.id) : lignesVisibles;
+
+  const incidentsSansPosition = supervisionIncidents
+    ? Array.from(incidents.values()).filter((incident) => positionIncident(incident, gares, courses) === null)
+    : [];
 
   return (
     <div className="relative h-full min-h-[420px] w-full">
@@ -474,17 +748,64 @@ export function CarteReseau() {
         className="h-full min-h-[420px] w-full"
       />
 
-      {lignesVisibles.map((ligneId) => (
-        <CanalSseLigne key={ligneId} ligneId={ligneId} dispatch={dispatch} />
+      {canauxLignes.map((ligneId) => (
+        <CanalSseLigne
+          key={ligneId}
+          ligneId={ligneId}
+          dispatch={dispatch}
+          onIncident={
+            supervisionIncidents
+              ? (evenement) => dispatchIncidents({ type: "INCIDENT", evenement })
+              : undefined
+          }
+        />
       ))}
 
-      {erreurChargement && (
-        <p
-          role="alert"
-          className="absolute top-4 left-4 z-10 rounded-carte border border-filet bg-papier px-3 py-2 text-sm text-statut-r60"
-        >
-          {erreurChargement}
-        </p>
+      <div className="pointer-events-none absolute top-4 left-4 z-10 flex flex-col gap-2">
+        {erreurChargement && (
+          <p
+            role="alert"
+            className="pointer-events-auto rounded-carte border border-filet bg-papier px-3 py-2 text-sm text-statut-r60"
+          >
+            {erreurChargement}
+          </p>
+        )}
+
+        {incidentsSansPosition.length > 0 && (
+          <div className="pointer-events-auto w-64 rounded-carte border border-filet bg-papier p-3 text-sm">
+            <p className="mb-2 text-xs font-medium text-ardoise-400 uppercase">
+              Incidents sans localisation ponctuelle
+            </p>
+            <ul className="flex flex-col gap-2">
+              {incidentsSansPosition.map((incident) => {
+                const style = styleGravite(incident.gravite);
+                return (
+                  <li key={incident.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIncidentSelectionneId(incident.id);
+                        setSelectionId(null);
+                      }}
+                      className="w-full text-left"
+                    >
+                      <span className={["inline-block h-2 w-2 rounded-full", style.fond].join(" ")} aria-hidden="true" />
+                      <span className="ml-1.5 text-encre">{libelleTypeIncident(incident.type)}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {incidentSelectionne && (
+        <PanneauDetailIncident
+          incident={incidentSelectionne}
+          gares={gares}
+          onFermer={() => setIncidentSelectionneId(null)}
+        />
       )}
 
       {selectionCourse && (

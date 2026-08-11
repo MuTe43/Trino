@@ -1,89 +1,109 @@
-# Phase 7 — Durcissement + démo (1.5 days)
+# Phase 7 — Console administrateur (2 days)
 
-Reserve phase. Do this even if phase 6 was cut — a demo that fails live costs
-more marks than a missing module.
+Also read: `docs/architecture/api-contract.md` (Référentiel, Auth),
+`docs/architecture/domain-model.md` (Role, utilisateur, journal_connexion).
 
-## Goal
+## Why this phase exists
 
-Tests where they matter, one-command startup, honest documentation of what was
-and was not built, and a rehearsed demo.
+The cahier des charges gives `ADMINISTRATEUR` four use cases: gérer les
+utilisateurs, paramétrer les lignes, gérer les gares, gérer les trains. Every
+one has had a working REST endpoint since phase 0 and **no screen at any point**.
+An actor with four use cases and zero interface is an undelivered actor.
+
+This phase is UI over endpoints that already exist, plus the two backend gaps
+those screens expose.
+
+## Backend — three gaps
+
+1. **`UtilisateurController` is read-only.** Add create, update (name, role),
+   activate/deactivate, and an admin-set temporary password. No self-service
+   reset, no email flow — out of scope.
+2. **No endpoint for the connection journal.** `GET /journal-connexions?
+   succes=&utilisateurId=&du=&au=&page=&taille=`, `ADMINISTRATEUR` only. The
+   table has been filling since phase 1 and nothing can read it.
+3. **Référentiel query filters**, deferred since phase 0: `?region=` and `?q=`
+   on gares, `?type=` and `?ligneId=` on trains. The admin lists are the
+   consumer that finally justifies them.
+
+Invariant 9 applies to all of these: URL rule **and** `@PreAuthorize`.
 
 ## Build
 
 ```
-backend/api/src/test/java/.../MoteurRetardTest.java       unit, the delay maths
-backend/api/src/test/java/.../MachineEtatCourseTest.java  unit, every transition
-backend/api/src/test/java/.../GeometrieLigneTest.java     unit, interpolation
-backend/api/src/test/java/.../IngestionIT.java            Testcontainers, end to end
-docker-compose.yml                                        add api, simulateur, web
-README.md
-docs/RAPPORT-NOTES.md                                     material for the report
-scripts/demo.sh                                           reset + seed + accelerate
+backend/api/.../iam/web/UtilisateurController.java        write verbs
+backend/api/.../iam/web/JournalController.java            new
+backend/api/.../iam/service/UtilisateurService.java       create, désactiver, réinitialiser
+backend/api/.../referentiel/repo/*.java                   filter queries
+frontend/src/app/admin/layout.tsx                         role-gated shell + nav
+frontend/src/app/admin/page.tsx                           counts, recent connections
+frontend/src/app/admin/gares/page.tsx
+frontend/src/app/admin/lignes/page.tsx
+frontend/src/app/admin/trains/page.tsx
+frontend/src/app/admin/utilisateurs/page.tsx
+frontend/src/app/admin/journal/page.tsx
+frontend/src/components/admin/TableauEditable.tsx         one component, four uses
+frontend/src/components/admin/DialogueEdition.tsx
 ```
 
-## Tests
+No migration this phase.
 
-Do not chase coverage. Four things are worth testing and the rest is not:
+## Rules
 
-1. Delay computation and forward propagation — the core claim of the project.
-2. The state machine — every transition in the domain model doc, including the
-   silence timeout.
-3. Polyline interpolation — an off-by-one here puts trains in the sea.
-   Add a parity assertion between `GeometrieLigne` (api) and `GeometrieCourse`
-   (simulateur): same trace, same stops, identical chainage. The duplication is
-   deliberate — the HTTP contract is the only intended coupling — but nothing
-   currently stops the two implementations from drifting, and when they do,
-   trains render off-track with no error anywhere.
-4. One integration test: POST a ping, assert the passage is stamped, the delay
-   is right, and an SSE event fires.
-
-Skip controller tests, skip repository tests, skip the frontend entirely.
-
-## Docker compose
-
-Full stack in one command. Healthchecks on db before api starts, api before
-simulateur. `docker compose up` on a clean machine must produce a working demo.
-Test this by pruning volumes and running it — it will fail the first time.
-
-## RAPPORT-NOTES.md
-
-Write this while it is fresh. It is not the report, it is the raw material:
-
-- The `Train` vs `Course` correction and why the spec's version breaks
-- The missing `Desserte` entity
-- Why the simulator sits outside the system boundary (decision 2) — this is the
-  centrepiece
-- Why no Redis, no PostGIS, no microservices (decisions 1, 4, 5)
-- What "99.9%" actually means here and what was implemented instead (decision 8)
-- What was not built and why: SMS/email/push channels, PDF export, and anything
-  cut from phase 6. Frame each as a scoped decision with the design in place,
-  not as an omission.
-
-A jury will respect a documented cut far more than a silently missing feature.
-
-## Demo script
-
-`scripts/demo.sh` resets the DB, seeds, generates two weeks of past courses with
-realistic delays for the charts, and starts the simulator at acceleration 30.
-
-Rehearse this order, timed, at least twice:
-1. Public map, trains moving — 2 min
-2. Click a delayed train, show the stop list with theoretical vs real — 2 min
-3. Station board on a second screen — 1 min
-4. Log in as agent, declare an incident, watch it appear on the public map — 2 min
-5. Log in as responsable, dashboard and punctuality chart, export XLSX — 3 min
-6. Kill the simulator, show graceful degradation — 1 min
-
-Step 6 is optional but it is the one that will impress an operations engineer,
-because it shows you thought about what happens when the feed dies.
+- `TableauEditable` is generic over columns and serves gares, lignes, trains and
+  users. Four bespoke tables is the wrong shape and four times the surface.
+- **`ligne.trace` is not editable here.** A textarea of coordinate pairs is a
+  loaded gun pointed at the map, and phase 5 measured how much depends on it.
+  Show the point count and a read-only preview; editing is out of scope.
+- Same for `desserte`: read-only list. Reordering stops invalidates `pk_km`
+  monotonicity, which the delay engine assumes.
+- Deleting a gare or ligne referenced by a course must return `409 CONFLIT` with
+  a readable message, never a foreign-key stack trace.
+- Deactivating a user does not delete them — the connection journal references
+  them, and audit trails do not get holes.
+- An admin cannot deactivate or demote their own account. Lock yourself out once
+  during a demo and you do not get back in.
+- Design direction from `phase-4.md` applies. Dense tables, tabular numerals on
+  every number, hairline borders. Invariant 8 on any status colour.
 
 ## Acceptance
 
 ```bash
-docker compose down -v && docker compose up -d
-sleep 90
-curl -s localhost:8080/actuator/health | grep -q '"status":"UP"'
-curl -s -o /dev/null -w '%{http_code}' localhost:3000
-cd backend && ./mvnw -q test
-bash scripts/demo.sh
+ADM=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"admin@sncft.tn","motDePasse":"Trino2026!"}' | jq -r .accessToken)
+
+# user management round trip
+UID=$(curl -s -X POST localhost:8080/api/v1/utilisateurs -H "Authorization: Bearer $ADM" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"test@sncft.tn","nom":"Test","role":"AGENT_CIRCULATION"}' | jq -r .id)
+curl -s -X PATCH localhost:8080/api/v1/utilisateurs/$UID -H "Authorization: Bearer $ADM" \
+  -H 'Content-Type: application/json' -d '{"actif":false}'
+curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"test@sncft.tn","motDePasse":"..."}'    # expect 401, account inactive
+
+# self-lockout is refused
+curl -s -o /dev/null -w '%{http_code}' -X PATCH localhost:8080/api/v1/utilisateurs/1 \
+  -H "Authorization: Bearer $ADM" -H 'Content-Type: application/json' \
+  -d '{"actif":false}'                                  # expect 409
+
+# journal is readable and paginated
+curl -s -H "Authorization: Bearer $ADM" \
+  "localhost:8080/api/v1/journal-connexions?succes=false&taille=5" | jq '.total'
+
+# filters exist
+curl -s "localhost:8080/api/v1/gares?q=sous" | jq '.contenu | length'      # >= 1
+curl -s "localhost:8080/api/v1/trains?type=GRANDES_LIGNES" | jq '.total'   # >= 1
+
+# referential integrity surfaces as 409, not 500
+curl -s -o /dev/null -w '%{http_code}' -X DELETE localhost:8080/api/v1/lignes/1 \
+  -H "Authorization: Bearer $ADM"                       # expect 409
+
+# a responsable cannot reach the admin API
+RESP=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"responsable@sncft.tn","motDePasse":"Trino2026!"}' | jq -r .accessToken)
+curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RESP" \
+  localhost:8080/api/v1/journal-connexions                # expect 403
 ```
+
+Then in a real browser: create a user, log in as them, deactivate them, confirm
+the next login fails. Edit a gare's name and see it change on the public map.

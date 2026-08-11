@@ -210,12 +210,74 @@ needs to know where a train should be.
 ## Incidents
 
 ```
-GET   /incidents?statut=&gravite=&ligneId=&depuis=
-POST  /incidents                AGENT_CIRCULATION, RESPONSABLE_EXPLOITATION
-PATCH /incidents/{id}           same, plus status transitions
+GET   /incidents?statut=&gravite=&ligneId=&depuis=&page=&taille=
+                                AGENT_CIRCULATION, RESPONSABLE_EXPLOITATION
+GET   /incidents/ouverts        same — open ones, for a map's initial snapshot
+GET   /incidents/{id}           same
+POST  /incidents                same
+PATCH /incidents/{id}           same — OUVERT -> EN_COURS only
+POST  /incidents/{id}/resolution   RESPONSABLE_EXPLOITATION only
 ```
 
-Creating an incident with a `courseId` may set that course's `causeRetard`.
+Reads are **not** public. The passenger portal learns about incidents from the
+ligne SSE channel; this list carries who declared what. `ADMINISTRATEUR` is
+excluded here for the same reason as the dashboards — a different duty.
+
+Transitions are `OUVERT -> EN_COURS -> RESOLU` and `OUVERT -> RESOLU`. Anything
+else is `409 CONFLIT`, named in the message.
+
+**Resolution is its own endpoint, and that is load-bearing.** `PATCH` with
+`statut: RESOLU` returns **403 for every caller, a responsable included**, with
+a message pointing here. That makes it a route rule, not a role check — which is
+the whole point. Expressed as "PATCH, but only a responsable may send RESOLU",
+the distinction would live in the request body, which the filter chain cannot
+see; `@Valid` runs during controller argument resolution, before any
+`@PreAuthorize` proxy, so an agent sending a malformed body that also asked to
+resolve would get `400 VALIDATION_ECHOUEE` on an operation they were never
+allowed to perform. That is the phase-1 bug invariant 9 documents. Two URLs, two
+pure filter-chain rules, and the specific one is declared **first** — matchers
+are evaluated in order and the first match wins, so moving it below the general
+`POST /incidents/**` rule silently lets any agent resolve. `IncidentSecuriteTest`
+pins the ordering; it was confirmed to fail (403 → 200) when they are swapped.
+
+Creating an incident with a `courseId` sets that course's `causeRetard` from
+`TypeIncident.causeAssociee()`. The mapping **suggests**: a course that already
+carries an explicitly set cause keeps it. A declaration may also carry
+`causeRetard` (an explicit override, which wins) and `actionCourse`
+(`ARRET_EXCEPTIONNEL` or `ANNULE`, the only two statuses an agent may set by
+hand). Both require `courseId`. All of it goes through `MachineEtatCourse`,
+still the only writer of `course.statut`.
+
+At least one of `gareId`, `ligneId`, `courseId` is required. An incident
+attached to nothing publishes on no channel and draws no marker.
+
+An incident publishes an `incident` SSE event on the affected ligne channel and,
+when it has one, the affected gare channel — over the connection the client
+already holds, never a second transport.
+
+A **gare-attached** incident additionally publishes on every ligne serving that
+gare. Without that, a station incident reaches `gare:13` alone, and a supervision
+map wanting to catch station incidents anywhere on the network has to subscribe
+to all forty gare channels — an explicit list that is global in everything but
+name, which is what invariant 5 exists to prevent. Fanning out server-side costs
+one indexed lookup and lets that map hold five channels. It is also the right
+answer for a passenger: someone watching ligne 1 should hear that a station on
+ligne 1 is blocked. The gare channel still carries it, for the station board.
+
+Payload:
+
+```
+event: incident
+data: {"incidentId":2,"type":"OBSTACLE_VOIE","gravite":"MAJEURE","statut":"OUVERT",
+       "description":"...","survenuAt":"2026-08-10T10:30:00Z","ligneId":1,"gareId":13,
+       "courseId":null,"latitude":35.8256,"longitude":10.6084}
+```
+
+`latitude`/`longitude` are resolved server-side — the gare's coordinates, else
+the course's last known position — so the passenger map and the supervision map
+cannot disagree about where an incident is. Both are null for a ligne-wide
+incident, which has no single point; the client lists it rather than inventing
+one.
 
 ## Tableau de bord et rapports
 
@@ -225,7 +287,7 @@ GET /tableau-bord/retards-par-ligne?date=
 GET /tableau-bord/heatmap?du=&au=            gare x tranche horaire
 GET /tableau-bord/distribution-retards?du=&au=   courses par tranche de retard
 GET /rapports/ponctualite?du=&au=&granularite=JOUR|MOIS
-GET /rapports/incidents?du=&au=              phase 6
+GET /rapports/incidents?du=&au=              type x gravité, délai moyen de résolution
 GET /rapports/{nom}/export?du=&au=&format=csv|xlsx
 ```
 
@@ -248,6 +310,17 @@ courses — label it as an estimate in the UI, it is not a real measurement).
   on time, so punctuality would start each morning at 100 % and sink as reality
   arrived. `passagesMesures` is that denominator, and it is 0 early in a service
   day — render "—" then, never "0 %".
+- `incidentsOuverts` / `incidentsResolus` partition the incidents **declared**
+  that day, filed on `survenu_at` bucketed in `Africa/Tunis`. Not "open right
+  now": every other tile is a property of the day itself, and a currently-open
+  count would make a KPI for a past date change every time somebody closed an
+  old incident.
+- `rapports/incidents` reports `delaiResolutionMoyenH` as **null**, not 0, for a
+  bucket where nothing has been resolved — an average over no rows. Zero reads
+  as "resolved instantly". `resoluAt` is stamped from the wall clock, never from
+  `HorlogeCirculation`: that clock belongs to the position feed and sits hours
+  away under an accelerated simulator, which produced a negative time to
+  resolution against a console-supplied `survenuAt`.
 - `distribution-retards` is not in the phase-5 query list but its Charts section
   asks for a delay histogram and nothing else carries that distribution. Buckets
   are computed by `ClasseRetard.de`, never by a CASE in SQL, so the thresholds

@@ -2,10 +2,9 @@
 
 import { useReducer } from "react";
 import { useFluxSse } from "@/lib/sse";
-import { classeDeRetard, styleStatut } from "@/lib/couleurs";
+import { classeDeRetard, libelleCauseRetard, styleStatut } from "@/lib/couleurs";
 import { ListeArrets } from "./ListeArrets";
 import type {
-  CauseRetard,
   CourseResumeDTO,
   EvenementPosition,
   EvenementRetard,
@@ -17,17 +16,6 @@ import type {
 const LIBELLES_SENS: Record<SensCourse, string> = {
   ALLER: "Aller",
   RETOUR: "Retour",
-};
-
-const LIBELLES_CAUSE: Record<CauseRetard, string> = {
-  INCIDENT_TECHNIQUE: "Incident technique",
-  METEO: "Conditions météorologiques",
-  ACCIDENT: "Accident",
-  SIGNALISATION: "Panne de signalisation",
-  TRAVAUX: "Travaux sur la voie",
-  ATTENTE_CORRESPONDANCE: "Attente d'une correspondance",
-  AFFLUENCE_VOYAGEURS: "Affluence de voyageurs",
-  AUTRE: "Autre cause",
 };
 
 interface Etat {
@@ -158,7 +146,7 @@ export function DetailCourseTempsReel({
           )}
           {course.causeRetard && (
             <span className="text-sm text-ardoise-700">
-              Cause : {LIBELLES_CAUSE[course.causeRetard]}
+              Cause : {libelleCauseRetard(course.causeRetard)}
             </span>
           )}
         </div>

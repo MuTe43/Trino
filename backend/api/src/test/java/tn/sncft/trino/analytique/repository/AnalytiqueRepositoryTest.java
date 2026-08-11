@@ -9,9 +9,9 @@ import tn.sncft.trino.analytique.dto.CaseHeatmapDTO;
 import tn.sncft.trino.analytique.dto.Granularite;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
 import tn.sncft.trino.analytique.dto.RetardParLigneDTO;
+import tn.sncft.trino.support.BaseDeDonneesTest;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -23,15 +23,14 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The dashboard aggregates, against the local dev database.
  *
- * <p>Skips itself when no database is reachable, like {@code CoherenceSeedTest}
- * -- {@code mvnw test} still passes on a machine without Docker. Note that this
- * means a wrong {@code TRINO_DB_URL} produces a silent skip, not a failure: if
- * these tests report as skipped, the database was not reached, not proven good.
+ * <p><b>Fails</b> rather than skips when no database is reachable, like
+ * {@code CoherenceSeedTest} -- see {@link BaseDeDonneesTest}. A wrong
+ * {@code TRINO_DB_URL} used to produce a silent skip that was indistinguishable
+ * from a pass, which meant none of this SQL was ever exercised on a green run.
  *
  * <p>Assertions are on properties rather than on exact figures. The backfill is
  * deterministic, but pinning it to a specific punctuality percentage would make
@@ -39,12 +38,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 class AnalytiqueRepositoryTest {
 
-    private static final String URL =
-            System.getenv().getOrDefault("TRINO_DB_URL", "jdbc:postgresql://localhost:5432/trino");
-    private static final String UTILISATEUR = System.getenv().getOrDefault("TRINO_DB_USER", "trino");
-    private static final String MOT_DE_PASSE = System.getenv().getOrDefault("TRINO_DB_PASSWORD", "trino");
+    private static final String URL = BaseDeDonneesTest.URL;
+    private static final String UTILISATEUR = BaseDeDonneesTest.UTILISATEUR;
+    private static final String MOT_DE_PASSE = BaseDeDonneesTest.MOT_DE_PASSE;
 
-    private static boolean baseDisponible;
     private static AnalytiqueRepository depot;
 
     /** A date the backfill has written, and the window the dashboard defaults to. */
@@ -54,30 +51,30 @@ class AnalytiqueRepositoryTest {
 
     @BeforeAll
     static void preparer() {
-        try (Connection connexion = DriverManager.getConnection(URL, UTILISATEUR, MOT_DE_PASSE);
+        // Reachability and content are reported apart: an empty database and an
+        // unreachable one need different fixes, and "run scripts/backfill.sh"
+        // is not something a connection error would ever tell you.
+        try (Connection connexion = BaseDeDonneesTest.ouvrir();
              Statement statement = connexion.createStatement();
              ResultSet resultat = statement.executeQuery(
                      "select max(date_service) from course where statut = 'TERMINUS_ATTEINT'")) {
-            baseDisponible = resultat.next() && resultat.getDate(1) != null;
-            if (baseDisponible) {
-                uneDatePassee = resultat.getDate(1).toLocalDate();
-                au = uneDatePassee;
-                du = au.minusDays(6);
-            }
+            boolean journeeTerminee = resultat.next() && resultat.getDate(1) != null;
+            BaseDeDonneesTest.exiger(journeeTerminee,
+                    "aucune journée terminée en base : lancez scripts/backfill.sh");
+            uneDatePassee = resultat.getDate(1).toLocalDate();
+            au = uneDatePassee;
+            du = au.minusDays(6);
         } catch (SQLException e) {
-            baseDisponible = false;
+            BaseDeDonneesTest.exiger(false, "base de développement injoignable (" + e.getMessage() + ")");
+            return;
         }
-        if (baseDisponible) {
-            DriverManagerDataSource source = new DriverManagerDataSource(URL, UTILISATEUR, MOT_DE_PASSE);
-            depot = new AnalytiqueRepository(new JdbcTemplate(source));
-        }
+        DriverManagerDataSource source = new DriverManagerDataSource(URL, UTILISATEUR, MOT_DE_PASSE);
+        depot = new AnalytiqueRepository(new JdbcTemplate(source));
     }
 
     @Test
     @DisplayName("le taux de ponctualité du jour reste entre 0 et 1")
     void leTauxResteBorne() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         AnalytiqueRepository.CompteursPonctualite compteurs = depot.ponctualiteDuJour(uneDatePassee);
 
         assertTrue(compteurs.mesures() > 0, "aucun passage mesuré sur " + uneDatePassee);
@@ -93,30 +90,30 @@ class AnalytiqueRepositoryTest {
     @Test
     @DisplayName("la ponctualité ne compte que les arrêts réellement desservis")
     void laPonctualiteIgnoreLesArretsNonAtteints() {
-        assumeTrue(baseDisponible, "base indisponible");
-
+        // Measured on a day the backfill has written rather than on today: the
+        // assertion holds for any date, and today is empty on a machine where
+        // the API has never run -- which used to skip this test silently, the
+        // exact vacuous pass this phase set out to remove.
         DriverManagerDataSource source = new DriverManagerDataSource(URL, UTILISATEUR, MOT_DE_PASSE);
         JdbcTemplate jdbc = new JdbcTemplate(source);
         Long tousLesPassages = jdbc.queryForObject("""
                 select count(*) from passage_gare pg
                   join course c on c.id = pg.course_id
                 where c.date_service = ?
-                """, Long.class, LocalDate.now());
+                """, Long.class, uneDatePassee);
         Long passagesAtteints = jdbc.queryForObject("""
                 select count(*) from passage_gare pg
                   join course c on c.id = pg.course_id
                 where c.date_service = ? and pg.arrivee_reelle is not null
-                """, Long.class, LocalDate.now());
+                """, Long.class, uneDatePassee);
 
-        assumeTrue(tousLesPassages != null && tousLesPassages > 0, "aucune course aujourd'hui");
-        assertEquals(passagesAtteints, depot.ponctualiteDuJour(LocalDate.now()).mesures());
+        assertTrue(tousLesPassages != null && tousLesPassages > 0, "aucun passage le " + uneDatePassee);
+        assertEquals(passagesAtteints, depot.ponctualiteDuJour(uneDatePassee).mesures());
     }
 
     @Test
     @DisplayName("les compteurs du jour sont cohérents entre eux")
     void lesCompteursSontCoherents() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         AnalytiqueRepository.CompteursJour compteurs = depot.compteursDuJour(uneDatePassee);
 
         assertTrue(compteurs.trains() > 0, "aucune course le " + uneDatePassee);
@@ -130,8 +127,6 @@ class AnalytiqueRepositoryTest {
     @Test
     @DisplayName("les retards par ligne couvrent chaque ligne ayant circulé")
     void lesRetardsParLigneCouvrentLeReseau() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         List<RetardParLigneDTO> lignes = depot.retardsParLigne(uneDatePassee);
 
         assertFalse(lignes.isEmpty());
@@ -145,8 +140,6 @@ class AnalytiqueRepositoryTest {
     @Test
     @DisplayName("la courbe de ponctualité rend un point par jour de la plage")
     void laCourbeRendUnPointParJour() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         List<PointPonctualiteDTO> points = depot.ponctualite(du, au, Granularite.JOUR);
 
         assertFalse(points.isEmpty());
@@ -162,8 +155,6 @@ class AnalytiqueRepositoryTest {
     @Test
     @DisplayName("la granularité mois regroupe la plage en un point")
     void laGranulariteMoisRegroupe() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         List<PointPonctualiteDTO> parMois = depot.ponctualite(du, au, Granularite.MOIS);
 
         assertTrue(parMois.size() <= 2, "une fenêtre de 7 jours couvre au plus deux mois");
@@ -175,8 +166,6 @@ class AnalytiqueRepositoryTest {
     @Test
     @DisplayName("les heures de la heatmap sont exprimées en Africa/Tunis")
     void lesHeuresSontLocales() {
-        assumeTrue(baseDisponible, "base indisponible");
-
         List<CaseHeatmapDTO> cases = depot.heatmap(du, au);
 
         assertFalse(cases.isEmpty());
@@ -223,4 +212,10 @@ class AnalytiqueRepositoryTest {
                             + heureUtcAttendue + " : conversion de fuseau absente ?");
         }
     }
+
+    // The two incident queries added in phase 6 are covered by
+    // IncidentRepositoryTest, which seeds its own rows: asserted here they would
+    // have been vacuously true on a freshly migrated database, where the
+    // incident table is empty -- the exact silent-pass this phase set out to
+    // remove.
 }

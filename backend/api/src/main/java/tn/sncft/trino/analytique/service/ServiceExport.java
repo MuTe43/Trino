@@ -11,9 +11,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tn.sncft.trino.analytique.dto.FormatExport;
 import tn.sncft.trino.analytique.dto.Granularite;
+import tn.sncft.trino.analytique.dto.LigneIncidentsDTO;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
 import tn.sncft.trino.analytique.dto.TableauRapport;
 import tn.sncft.trino.analytique.repository.AnalytiqueRepository;
+import tn.sncft.trino.commun.PlageDates;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -22,6 +24,7 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -65,10 +68,11 @@ public class ServiceExport {
 
     public ServiceExport(AnalytiqueRepository analytiqueRepository) {
         this.analytiqueRepository = analytiqueRepository;
-        // phase 6 adds "incidents", this::rapportIncidents here once the
-        // incident table exists. That entry and its builder are the whole
-        // change -- no new CSV or XLSX code.
-        this.rapports = Map.of("ponctualite", this::rapportPonctualite);
+        // Phase 6 added "incidents": one entry and one builder, and no new CSV
+        // or XLSX code -- which was the point of registering reports by name.
+        this.rapports = Map.of(
+                "ponctualite", this::rapportPonctualite,
+                "incidents", this::rapportIncidents);
     }
 
     @PreAuthorize("hasRole('RESPONSABLE_EXPLOITATION')")
@@ -79,12 +83,7 @@ public class ServiceExport {
             throw new IllegalArgumentException(
                     "Rapport inconnu : " + nom + " (disponible : " + String.join(", ", rapports.keySet()) + ").");
         }
-        if (du == null || au == null) {
-            throw new IllegalArgumentException("Les bornes du et au sont obligatoires.");
-        }
-        if (au.isBefore(du)) {
-            throw new IllegalArgumentException("La borne au ne peut pas précéder du.");
-        }
+        PlageDates.verifier(du, au);
         return constructeur.apply(du, au);
     }
 
@@ -114,6 +113,26 @@ public class ServiceExport {
         }
         return new TableauRapport("ponctualite",
                 List.of("Date", "Passages mesurés", "Passages à l'heure", "Ponctualité (%)", "Retard moyen (min)"),
+                lignes);
+    }
+
+    private TableauRapport rapportIncidents(LocalDate du, LocalDate au) {
+        List<LigneIncidentsDTO> incidents = analytiqueRepository.incidents(du, au);
+        List<List<Object>> lignes = new ArrayList<>(incidents.size());
+        for (LigneIncidentsDTO incident : incidents) {
+            // Arrays.asList, not List.of: the mean resolution time is null for a
+            // bucket where nothing has been resolved, and List.of rejects null
+            // with an NPE at export time -- on the one row that most needs to
+            // say "nothing closed yet".
+            lignes.add(Arrays.asList(
+                    incident.type(),
+                    incident.gravite(),
+                    incident.total(),
+                    incident.resolus(),
+                    incident.delaiResolutionMoyenH()));
+        }
+        return new TableauRapport("incidents",
+                List.of("Type", "Gravité", "Total", "Résolus", "Délai moyen de résolution (h)"),
                 lignes);
     }
 

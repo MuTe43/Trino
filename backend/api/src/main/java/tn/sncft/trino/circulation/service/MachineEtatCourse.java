@@ -1,15 +1,19 @@
 package tn.sncft.trino.circulation.service;
 
 import org.springframework.stereotype.Component;
+import tn.sncft.trino.circulation.domaine.CauseRetard;
 import tn.sncft.trino.circulation.domaine.Course;
 import tn.sncft.trino.circulation.domaine.PassageGare;
 import tn.sncft.trino.circulation.domaine.StatutCourse;
+import tn.sncft.trino.commun.ConflitException;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The ONLY place {@code course.statut} is assigned. Every transition of the
@@ -33,6 +37,20 @@ public class MachineEtatCourse {
     public static final int SEUIL_RETARD_MIN = 5;
 
     /**
+     * The only statuses an agent may set by hand (phase 6). Everything else is
+     * derived from the feed and cannot be typed in.
+     */
+    public static final Set<StatutCourse> ACTIONS_AGENT =
+            EnumSet.of(StatutCourse.ARRET_EXCEPTIONNEL, StatutCourse.ANNULE);
+
+    /**
+     * A run that is over. Neither is re-derived from the feed, and neither
+     * accepts an agent action either -- one definition, used by both paths.
+     */
+    public static final Set<StatutCourse> TERMINAUX =
+            EnumSet.of(StatutCourse.ANNULE, StatutCourse.TERMINUS_ATTEINT);
+
+    /**
      * Recomputes the status and assigns it.
      *
      * @return the new status if it changed, empty if it did not -- so callers
@@ -48,13 +66,80 @@ public class MachineEtatCourse {
         return Optional.of(cible);
     }
 
+    /**
+     * An agent's manual status change, from the exploitation console.
+     *
+     * <p>Only the two statuses phase 6 grants an agent: {@code ANNULE} and
+     * {@code ARRET_EXCEPTIONNEL}. It goes through this class for the same reason
+     * every other transition does -- a manual cancellation is still a status
+     * change, and letting a service write {@code statut} directly is how a
+     * second, disagreeing answer to "why is this train showing as cancelled"
+     * gets into the system.
+     *
+     * <p>{@code ANNULE} is terminal, so the feed can never undo it. A manual
+     * {@code ARRET_EXCEPTIONNEL} is deliberately NOT terminal: it is re-derived
+     * away as soon as pings resume, which is exactly the
+     * "ARRET_EXCEPTIONNEL --(ping resumes)--> previous state" transition of the
+     * documented state machine. An agent flags a stop; the train moving again
+     * un-flags it without anyone having to remember to.
+     *
+     * <p>A course already in a terminal state accepts nothing. Without that
+     * check, {@code ANNULE -> ARRET_EXCEPTIONNEL} was accepted -- and since
+     * ARRET_EXCEPTIONNEL is deliberately non-terminal, the very next ping
+     * re-derived the course to EN_CIRCULATION. A cancelled train reappeared as
+     * running on the passenger map, which is the failure "ANNULE is terminal"
+     * exists to prevent. Guarding only {@code evaluer} guarded the feed and left
+     * the console as a way in.
+     *
+     * @return the new status if it changed, empty if the course was already there
+     * @throws IllegalArgumentException if asked for a status no agent may set --
+     *         a programming error, not a user error: the caller validates first
+     * @throws ConflitException if the run is already over
+     */
+    public Optional<StatutCourse> appliquerActionAgent(Course course, StatutCourse cible) {
+        if (!ACTIONS_AGENT.contains(cible)) {
+            throw new IllegalArgumentException("Statut hors du pouvoir d'un agent : " + cible);
+        }
+        if (TERMINAUX.contains(course.getStatut())) {
+            throw new ConflitException("La course " + course.getId() + " est " + course.getStatut()
+                    + " : une action d'agent ne s'applique plus.");
+        }
+        if (course.getStatut() == cible) {
+            return Optional.empty();
+        }
+        course.setStatut(cible);
+        return Optional.of(cible);
+    }
+
+    /**
+     * Attributes a delay cause, without ever overwriting one already set.
+     *
+     * <p>Here rather than on the caller so the "suggests, never overwrites" rule
+     * has one implementation: an incident type maps to a cause, but an agent who
+     * typed the cause in knows more than the lookup table does.
+     *
+     * @return true if the cause was written
+     */
+    public boolean suggererCause(Course course, CauseRetard cause) {
+        if (cause == null || course.getCauseRetard() != null) {
+            return false;
+        }
+        course.setCauseRetard(cause);
+        return true;
+    }
+
+    /** Overwrites the delay cause. The agent named it explicitly, so it wins. */
+    public void attribuerCause(Course course, CauseRetard cause) {
+        course.setCauseRetard(cause);
+    }
+
     private StatutCourse calculer(Course course, List<PassageGare> passages, OffsetDateTime maintenant) {
         StatutCourse actuel = course.getStatut();
 
         // Terminal. ANNULE is an agent's decision and TERMINUS_ATTEINT is the
         // end of the run; neither is re-derived from the feed, or a late ping
         // would resurrect a finished course.
-        if (actuel == StatutCourse.ANNULE || actuel == StatutCourse.TERMINUS_ATTEINT) {
+        if (TERMINAUX.contains(actuel)) {
             return actuel;
         }
 

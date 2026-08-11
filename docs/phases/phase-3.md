@@ -135,7 +135,8 @@ visible failure a passenger can catch you in, and the one a jury will probe.
 ```bash
 # with API + simulateur running at acceleration 20
 timeout 30 curl -sN localhost:8080/api/v1/stream/lignes/1 | head -20
-# expect: heartbeat comments and `event: position` frames with a data line
+# expect: heartbeat comments and `event:position` frames with a data line
+# (SseEmitter writes no space after the colon — valid SSE, match both forms)
 
 psql -h localhost -U trino -d trino -c \
   "select statut, count(*) from course where date_service = current_date group by statut"

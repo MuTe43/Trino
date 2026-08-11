@@ -3,9 +3,9 @@ package tn.sncft.trino.referentiel;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import tn.sncft.trino.support.BaseDeDonneesTest;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -13,7 +13,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Guards the seed against regressing into a shape that produces
@@ -24,31 +23,33 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * crash anything -- they quietly yield the wrong answer, which is why they are
  * asserted here rather than left to be noticed on a dashboard.
  *
- * <p>Runs against the local dev database and skips itself when none is
- * reachable, so {@code mvnw test} still passes on a machine without Docker.
+ * <p>Runs against the local dev database, and <b>fails</b> rather than skips
+ * when none is reachable -- see {@link BaseDeDonneesTest}. A seed regression
+ * that slips through because nobody noticed the suite skipped it is the failure
+ * mode this class exists to prevent.
  */
 class CoherenceSeedTest {
 
-    private static final String URL =
-            System.getenv().getOrDefault("TRINO_DB_URL", "jdbc:postgresql://localhost:5432/trino");
-    private static final String UTILISATEUR = System.getenv().getOrDefault("TRINO_DB_USER", "trino");
-    private static final String MOT_DE_PASSE = System.getenv().getOrDefault("TRINO_DB_PASSWORD", "trino");
-
-    private static boolean baseDisponible;
-
     @BeforeAll
     static void verifierBase() {
+        boolean seedCharge;
+        // Reachability and content are reported apart on purpose: "no database"
+        // and "a database with no seed in it" have different fixes, and the
+        // second is what a TRINO_DB_URL aimed at another Postgres on the same
+        // host looks like.
         try (Connection connexion = ouvrir();
              Statement statement = connexion.createStatement();
              ResultSet resultat = statement.executeQuery("select count(*) from desserte")) {
-            baseDisponible = resultat.next() && resultat.getInt(1) > 0;
+            seedCharge = resultat.next() && resultat.getInt(1) > 0;
         } catch (SQLException e) {
-            baseDisponible = false;
+            BaseDeDonneesTest.exiger(false, "base de développement injoignable (" + e.getMessage() + ")");
+            return;
         }
+        BaseDeDonneesTest.exiger(seedCharge, "base joignable mais desserte est vide : migrations non appliquées");
     }
 
     private static Connection ouvrir() throws SQLException {
-        return DriverManager.getConnection(URL, UTILISATEUR, MOT_DE_PASSE);
+        return BaseDeDonneesTest.ouvrir();
     }
 
     @Test
@@ -135,16 +136,9 @@ class CoherenceSeedTest {
     }
 
     private void assertAucuneLigne(String requete, String explication) {
-        // Skipping when there is no database keeps `mvnw test` usable on a
-        // machine without Docker, but a silent vacuous pass is exactly how a
-        // seed regression would slip through. Set TRINO_DB_REQUIS=1 (CI, or
-        // before a release) to turn the skip into a failure.
-        if (!baseDisponible && "1".equals(System.getenv("TRINO_DB_REQUIS"))) {
-            throw new IllegalStateException(
-                    "TRINO_DB_REQUIS=1 mais la base est injoignable : contrôles de cohérence non exécutés.");
-        }
-        assumeTrue(baseDisponible, "base de développement indisponible, contrôle ignoré");
-
+        // No guard here: verifierBase() has already failed the whole class if
+        // the database was missing. A per-test skip is what let a vacuous pass
+        // look like a real one.
         List<String> violations = new ArrayList<>();
         try (Connection connexion = ouvrir();
              Statement statement = connexion.createStatement();

@@ -1,8 +1,6 @@
 package tn.sncft.trino.circulation.service;
 
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import tn.sncft.trino.circulation.domaine.ClasseRetard;
 import tn.sncft.trino.circulation.domaine.Course;
 import tn.sncft.trino.circulation.domaine.PassageGare;
@@ -11,6 +9,7 @@ import tn.sncft.trino.circulation.evenement.EvenementPosition;
 import tn.sncft.trino.circulation.evenement.EvenementRetard;
 import tn.sncft.trino.circulation.evenement.EvenementStatut;
 import tn.sncft.trino.diffusion.HubSse;
+import tn.sncft.trino.diffusion.PublicationApresCommit;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -79,26 +78,11 @@ public class DiffuseurCirculation {
     }
 
     /**
-     * Both callers publish from inside a transaction, so the send is deferred
-     * to after the commit. Publishing inline would let a subsequent rollback
-     * leave subscribers holding a delta for state that was never persisted --
-     * and a client reacting by refetching the REST snapshot would read the
-     * pre-commit row and disagree with the delta it just applied.
-     *
-     * <p>The payload and the channel list are built eagerly, before the entity
-     * state can move on; only the fan-out waits.
+     * Both callers publish from inside a transaction, so the send is deferred to
+     * after the commit -- see {@link PublicationApresCommit} for why.
      */
     private void publier(List<String> canaux, String nomEvenement, Object donnees) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            hubSse.publier(canaux, nomEvenement, donnees);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                hubSse.publier(canaux, nomEvenement, donnees);
-            }
-        });
+        PublicationApresCommit.publier(hubSse, canaux, nomEvenement, donnees);
     }
 
     /**

@@ -120,26 +120,40 @@ class StreamControllerTest {
     }
 
     /**
-     * Measured as a delta, not as an absolute count, and that is load-bearing.
-     * {@code @EnableScheduling} sits on {@code TrinoApplication}, which is the
-     * {@code @SpringBootConfiguration} this slice bootstraps from, so
+     * Compared between two connections rather than counted on one, and that is
+     * load-bearing. {@code @EnableScheduling} sits on {@code TrinoApplication},
+     * the {@code @SpringBootConfiguration} this slice bootstraps from, so
      * {@link HubSse#battementCoeur()} is genuinely scheduled here too and its
-     * {@code fixedRate} timer fires once at context start. Whether that firing
-     * lands before or after the subscription is registered depends on how
-     * loaded the machine is -- alone the test saw one frame, inside the full
-     * suite it saw two. The claim worth pinning is that ONE explicit heartbeat
-     * costs a four-channel client exactly one frame, not four.
+     * {@code fixedRate} timer fires on its own schedule.
+     *
+     * <p>Phase 5 measured a delta around the explicit call, which narrowed the
+     * race but did not close it: a scheduled firing landing between the two
+     * reads still adds a frame, and it did exactly that during phase 6's verify
+     * run. There is no window to shrink here -- a stray beat reaches BOTH
+     * connections, so comparing them cancels it whenever it lands.
+     *
+     * <p>The claim being pinned is the one that matters: a heartbeat costs a
+     * client one frame per CONNECTION, so a four-channel client and a
+     * one-channel client receive the same number. One frame per channel would
+     * make it four against one.
      */
     @Test
     @DisplayName("le battement de cœur n'envoie qu'une trame par connexion, pas une par canal")
     void unSeulBattementParConnexion() throws Exception {
-        MvcResult resultat = ouvrirMultiplex("1,2,3", "7");
-        int avant = occurrences(resultat.getResponse().getContentAsString(), "battement");
+        MvcResult quatreCanaux = ouvrirMultiplex("1,2,3", "7");
+        MvcResult unCanal = ouvrirMultiplex("4", "");
+        int avantQuatre = occurrences(quatreCanaux.getResponse().getContentAsString(), "battement");
+        int avantUn = occurrences(unCanal.getResponse().getContentAsString(), "battement");
 
         hub.battementCoeur();
 
-        String corps = resultat.getResponse().getContentAsString();
-        assertEquals(1, occurrences(corps, "battement") - avant, corps);
+        int deltaQuatre = occurrences(quatreCanaux.getResponse().getContentAsString(), "battement") - avantQuatre;
+        int deltaUn = occurrences(unCanal.getResponse().getContentAsString(), "battement") - avantUn;
+
+        assertEquals(deltaUn, deltaQuatre,
+                "quatre canaux ont reçu " + deltaQuatre + " trames contre " + deltaUn
+                        + " pour un seul : le battement est émis par canal, pas par connexion");
+        assertTrue(deltaQuatre >= 1, "aucune trame reçue pour un battement explicite");
     }
 
     /**

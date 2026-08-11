@@ -22,17 +22,17 @@ import type { Role } from "@/lib/types";
 /**
  * Where each role lands after signing in.
  *
- * `/exploitation` has no page — only `/exploitation/tableau-bord` exists — so
- * sending a responsable there produced a 404 on the exact path the phase-5 jury
- * demo takes: sign in, look at the dashboard. An agent has no screen of their
- * own until phase 6 and would be refused the dashboard (403,
- * RESPONSABLE_EXPLOITATION only), so they go to the public map, which is at
- * least a working page showing live traffic.
+ * `/exploitation` has no page of its own — only its subroutes do — so sending
+ * a role there directly would 404. RESPONSABLE_EXPLOITATION goes straight to
+ * the dashboard (phase-5 jury demo: sign in, look at the dashboard).
+ * AGENT_CIRCULATION has no dashboard access (403) but does have its own
+ * console as of phase 6 -- incidents, not traffic, is an agent's primary
+ * task, so that is the landing page rather than `/exploitation/trafic`.
  */
 function pageApresConnexion(role: Role): string {
   if (role === "ADMINISTRATEUR") return "/admin";
   if (role === "RESPONSABLE_EXPLOITATION") return "/exploitation/tableau-bord";
-  // phase 6: give AGENT_CIRCULATION its own console and route it there.
+  if (role === "AGENT_CIRCULATION") return "/exploitation/incidents";
   return "/";
 }
 

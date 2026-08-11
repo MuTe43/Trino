@@ -1,7 +1,7 @@
 // Single source of truth mapping a course's state to a colour + label.
 // Every component that paints a course by status/delay imports from here --
 // nothing else hardcodes a hex or duplicates the ClasseRetard -> ramp switch.
-import type { ClasseRetard, StatutCourse } from "./types";
+import type { CauseRetard, ClasseRetard, Gravite, StatutCourse, StatutIncident, TypeIncident } from "./types";
 
 /** Light mode is the default surface; "sombre" is reserved for the board. */
 export type ModeCouleur = "clair" | "sombre";
@@ -190,4 +190,82 @@ export function styleStatut(
     etiquette: libelleStatut(statut),
     perime: false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Incidents (phase 6). Gravité reuses the same five-token ramp as delay
+// classes rather than introducing a second colour system -- MINEURE..CRITIQUE
+// walk the same a-lheure -> r60 progression a passenger already reads as
+// "fine -> serious" on every course marker and departure row.
+// ---------------------------------------------------------------------------
+
+const CLE_RAMPE_GRAVITE: Record<Gravite, CleRampe> = {
+  MINEURE: "a-lheure",
+  MOYENNE: "r10",
+  MAJEURE: "r30",
+  CRITIQUE: "r60",
+};
+
+const LIBELLES_GRAVITE: Record<Gravite, string> = {
+  MINEURE: "Mineure",
+  MOYENNE: "Moyenne",
+  MAJEURE: "Majeure",
+  CRITIQUE: "Critique",
+};
+
+export function libelleGravite(gravite: Gravite): string {
+  return LIBELLES_GRAVITE[gravite];
+}
+
+export interface StyleGravite extends JetonCouleur {
+  etiquette: string;
+}
+
+/** Paint for one incident's gravité. Same literal-class discipline as
+ * `styleStatut` -- see the module-level warning on `JETONS`. */
+export function styleGravite(gravite: Gravite, mode: ModeCouleur = "clair"): StyleGravite {
+  return { ...jeton(CLE_RAMPE_GRAVITE[gravite], mode), etiquette: libelleGravite(gravite) };
+}
+
+const LIBELLES_STATUT_INCIDENT: Record<StatutIncident, string> = {
+  OUVERT: "Ouvert",
+  EN_COURS: "En cours",
+  RESOLU: "Résolu",
+};
+
+export function libelleStatutIncident(statut: StatutIncident): string {
+  return LIBELLES_STATUT_INCIDENT[statut];
+}
+
+const LIBELLES_TYPE_INCIDENT: Record<TypeIncident, string> = {
+  PANNE_LOCOMOTIVE: "Panne de locomotive",
+  DEFAUT_SIGNALISATION: "Défaut de signalisation",
+  ACCIDENT: "Accident",
+  OBSTACLE_VOIE: "Obstacle sur la voie",
+  INTEMPERIES: "Intempéries",
+  COUPURE_ELECTRIQUE: "Coupure électrique",
+  TRAVAUX: "Travaux",
+  AUTRE: "Autre",
+};
+
+export function libelleTypeIncident(type: TypeIncident): string {
+  return LIBELLES_TYPE_INCIDENT[type];
+}
+
+/** Shared with `DetailCourseTempsReel` -- the one place a `CauseRetard` gets
+ * printed for a passenger, and now also the incident console and form, which
+ * show `causeAssociee`/`causeRetard` the same way. */
+const LIBELLES_CAUSE_RETARD: Record<CauseRetard, string> = {
+  INCIDENT_TECHNIQUE: "Incident technique",
+  METEO: "Conditions météorologiques",
+  ACCIDENT: "Accident",
+  SIGNALISATION: "Panne de signalisation",
+  TRAVAUX: "Travaux sur la voie",
+  ATTENTE_CORRESPONDANCE: "Attente d'une correspondance",
+  AFFLUENCE_VOYAGEURS: "Affluence de voyageurs",
+  AUTRE: "Autre cause",
+};
+
+export function libelleCauseRetard(cause: CauseRetard): string {
+  return LIBELLES_CAUSE_RETARD[cause];
 }

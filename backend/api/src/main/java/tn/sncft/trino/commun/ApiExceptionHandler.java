@@ -49,6 +49,17 @@ public class ApiExceptionHandler {
         return reponse(HttpStatus.FORBIDDEN, "ACCES_REFUSE", "Accès refusé.", List.of());
     }
 
+    /**
+     * Refused for everyone on this route, whatever the caller's role -- so the
+     * message is kept, unlike the {@link AccessDeniedException} branch above.
+     * It is the only thing that can tell the caller the operation exists on
+     * another endpoint.
+     */
+    @ExceptionHandler(OperationInterditeException.class)
+    public ResponseEntity<ErreurDTO> gererOperationInterdite(OperationInterditeException ex) {
+        return reponse(HttpStatus.FORBIDDEN, "ACCES_REFUSE", ex.getMessage(), List.of());
+    }
+
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ErreurDTO> gererRessourceNonTrouvee(NoResourceFoundException ex) {
         return reponse(HttpStatus.NOT_FOUND, "INTROUVABLE", "Ressource introuvable.", List.of());
@@ -92,6 +103,12 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErreurDTO> gererMethodeNonSupportee(HttpRequestMethodNotSupportedException ex) {
         return reponse(HttpStatus.METHOD_NOT_ALLOWED, "VALIDATION_ECHOUEE",
                 "Méthode HTTP non supportée pour cette ressource.", List.of());
+    }
+
+    /** A transition the domain refuses, caught before the database sees it. */
+    @ExceptionHandler(ConflitException.class)
+    public ResponseEntity<ErreurDTO> gererConflitMetier(ConflitException ex) {
+        return reponse(HttpStatus.CONFLICT, "CONFLIT", ex.getMessage(), List.of());
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

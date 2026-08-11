@@ -8,6 +8,7 @@ import tn.sncft.trino.analytique.dto.CaseHeatmapDTO;
 import tn.sncft.trino.analytique.dto.Granularite;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
 import tn.sncft.trino.analytique.repository.AnalytiqueRepository;
+import tn.sncft.trino.commun.PlageDates;
 import tn.sncft.trino.circulation.domaine.ClasseRetard;
 
 import java.time.LocalDate;
@@ -25,13 +26,6 @@ import java.util.Map;
  */
 @Service
 public class ServicePonctualite {
-
-    /**
-     * Widest range the endpoints accept. A year of stops is still a small
-     * aggregate here, but an unbounded range is an unbounded scan, and this is
-     * an endpoint a caller can hit repeatedly.
-     */
-    private static final int JOURS_MAX = 366;
 
     private final AnalytiqueRepository analytiqueRepository;
 
@@ -84,14 +78,6 @@ public class ServicePonctualite {
      * request rather than as a 500.
      */
     private void verifierPlage(LocalDate du, LocalDate au) {
-        if (du == null || au == null) {
-            throw new IllegalArgumentException("Les bornes du et au sont obligatoires.");
-        }
-        if (au.isBefore(du)) {
-            throw new IllegalArgumentException("La borne au ne peut pas précéder du.");
-        }
-        if (du.plusDays(JOURS_MAX).isBefore(au)) {
-            throw new IllegalArgumentException("Plage trop large : " + JOURS_MAX + " jours au maximum.");
-        }
+        PlageDates.verifier(du, au);
     }
 }

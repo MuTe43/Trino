@@ -122,6 +122,18 @@ is for history and reports only — never query it on the hot path.
 `course_id` FK null · `gravite` enum Gravite · `impact` text ·
 `statut` enum StatutIncident · `declare_par` FK utilisateur ·
 `resolu_at` timestamptz null
+index on (`statut`), (`ligne_id`,`survenu_at` desc), (`survenu_at` desc)
+
+Two check constraints beyond the column types (V7):
+
+- `(statut = 'RESOLU') = (resolu_at is not null)` — a biconditional, not two
+  rules. A resolved row without a time makes `resolu_at` unusable for reporting;
+  a time on a row still open is worse, because the incidents report would count
+  it closed while the console shows it open.
+- at least one of `gare_id`, `ligne_id`, `course_id`. The three stay
+  individually nullable; only all three at once is forbidden. An incident
+  attached to nothing publishes on no SSE channel and draws no marker, so it
+  would be invisible everywhere but the list.
 
 ### iam
 
@@ -150,6 +162,25 @@ StatutIncident   OUVERT, EN_COURS, RESOLU
 Role             VOYAGEUR, AGENT_CIRCULATION, RESPONSABLE_EXPLOITATION, ADMINISTRATEUR
 ```
 
+## Incident type to delay cause
+
+`TypeIncident.causeAssociee()`. Linking an incident to a course suggests the
+cause; it never overwrites one an agent set explicitly.
+
+| TypeIncident | CauseRetard |
+|---|---|
+| `PANNE_LOCOMOTIVE` | `INCIDENT_TECHNIQUE` |
+| `DEFAUT_SIGNALISATION` | `SIGNALISATION` |
+| `ACCIDENT` | `ACCIDENT` |
+| `OBSTACLE_VOIE` | `ACCIDENT` |
+| `INTEMPERIES` | `METEO` |
+| `COUPURE_ELECTRIQUE` | `INCIDENT_TECHNIQUE` |
+| `TRAVAUX` | `TRAVAUX` |
+| `AUTRE` | `AUTRE` |
+
+The enums are not 1:1 and never will be: `ATTENTE_CORRESPONDANCE` and
+`AFFLUENCE_VOYAGEURS` are causes with no incident behind them.
+
 ## Delay classification
 
 Derived, never stored. `retard_min` -> bucket:
@@ -170,7 +201,16 @@ EN_CIRCULATION|RETARDE --(last passage_gare has arrivee_reelle)--> TERMINUS_ATTE
 ```
 
 Transitions are computed in one place: `MachineEtatCourse`. Nowhere else may
-set `course.statut`.
+set `course.statut`. That includes the agent action added in phase 6:
+`appliquerActionAgent` accepts `ARRET_EXCEPTIONNEL` and `ANNULE` and rejects
+everything else, and `suggererCause`/`attribuerCause` own the delay cause for
+the same reason.
+
+`ANNULE` is terminal, so a late ping cannot resurrect a cancelled run. A manual
+`ARRET_EXCEPTIONNEL` deliberately is **not**: it is re-derived away as soon as
+pings resume, which is exactly the `ARRET_EXCEPTIONNEL --(ping resumes)-->
+previous state` line above. An agent flags a stop; the train moving again
+un-flags it without anyone having to remember to.
 
 The second transition is the origin-station case and it is easy to miss: a
 course whose trainset never shows up receives no ping, so nothing wakes the

@@ -56,12 +56,21 @@ inherits N minutes unless the train makes up time. ETA for the next station is
 theoretical time. No machine learning, no historical regression. It is honest
 and it is explainable in a defence.
 
-## 7. Notifications ship as an interface, not four integrations
+## 7. Two working notification channels, two honest stubs
 
-`CanalNotification` with `EnvoyerAsync(Notification)`. Implementations: in-app
-(SSE), and a logging stub shaped like an SMS gateway. Email, SMS and push are
-documented as adapters with the integration points marked. Four half-working
-channels are worse than one working channel and a clear design.
+**Revised at phase 8.** The original decision scoped notifications to an adapter
+interface with no working channel. That was wrong: *recevoir des notifications*
+is a use case of the cahier des charges, and an interface nobody can demonstrate
+does not deliver it. Ranking it last among four priorities is not the same as
+authorising its removal.
+
+`CanalNotification` with an async dispatch. `IN_APP` over the existing SSE hub
+and `EMAIL` over SMTP to Mailpit both genuinely work — a real message in a real
+inbox, no credentials, no cost. `SMS` stays a Twilio-shaped stub that logs, and
+push is not implemented. Both gaps are stated rather than hidden.
+
+Four half-working integrations would still be worse than this. Zero working ones
+was worse than either.
 
 ## 8. Availability is designed for, not claimed
 
@@ -70,3 +79,29 @@ actually implemented: stateless API layer, Spring Actuator health and readiness
 probes, graceful degradation when the position feed stops (courses move to
 `ARRET_EXCEPTIONNEL` rather than freezing on stale data), and Postgres backup
 documented as a `pg_dump` cron. Report it as design intent with the gap stated.
+
+## 9. Resolving an incident is a separate endpoint, not a PATCH field
+
+`PATCH /incidents/{id}` is open to an agent; resolving is the responsable's. The
+obvious shape — one PATCH, with a role check on `statut: RESOLU` — puts the
+distinction in the request body, and the filter chain cannot see a body.
+`@Valid` runs during controller argument resolution, before the AOP proxy behind
+`@PreAuthorize` exists, so an agent sending a malformed payload that also asked
+to resolve would be told their payload was malformed on an operation they were
+never allowed to perform. That is the phase-1 bug invariant 9 exists to
+document, and it is invisible to the compiler and to any test that sends a valid
+body.
+
+So `POST /incidents/{id}/resolution` carries its own URL rule, and PATCH refuses
+`RESOLU` for **everyone** — a responsable included. That last part is what keeps
+it a route rule rather than a role check smuggled back in: no role information
+enters the decision, so the 400-instead-of-403 case cannot reappear.
+
+The cost is one more endpoint and an error message that has to explain where to
+go. `OperationInterditeException` exists for that: Spring's `AccessDeniedException`
+is answered with a fixed "Accès refusé.", which would leave the caller with a 403
+and no idea the operation exists elsewhere.
+
+The matcher order is load-bearing — the resolution rule must precede the general
+`POST /incidents/**` rule, or any agent may resolve. `IncidentSecuriteTest` pins
+it, and was confirmed to fail (403 → 200) with the two swapped.

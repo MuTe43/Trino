@@ -10,10 +10,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tn.sncft.trino.analytique.dto.FormatExport;
 import tn.sncft.trino.analytique.dto.Granularite;
+import tn.sncft.trino.analytique.dto.LigneIncidentsDTO;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
 import tn.sncft.trino.analytique.dto.TableauRapport;
 import tn.sncft.trino.analytique.service.ServiceExport;
 import tn.sncft.trino.analytique.service.ServicePonctualite;
+import tn.sncft.trino.analytique.service.ServiceRapportIncidents;
 
 import java.io.IOException;
 import java.time.LocalDate;
@@ -30,10 +32,14 @@ import java.util.List;
 public class RapportController {
 
     private final ServicePonctualite servicePonctualite;
+    private final ServiceRapportIncidents serviceRapportIncidents;
     private final ServiceExport serviceExport;
 
-    public RapportController(ServicePonctualite servicePonctualite, ServiceExport serviceExport) {
+    public RapportController(ServicePonctualite servicePonctualite,
+                             ServiceRapportIncidents serviceRapportIncidents,
+                             ServiceExport serviceExport) {
         this.servicePonctualite = servicePonctualite;
+        this.serviceRapportIncidents = serviceRapportIncidents;
         this.serviceExport = serviceExport;
     }
 
@@ -43,6 +49,13 @@ public class RapportController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate au,
             @RequestParam(defaultValue = "JOUR") Granularite granularite) {
         return servicePonctualite.ponctualite(du, au, granularite);
+    }
+
+    @GetMapping("/incidents")
+    public List<LigneIncidentsDTO> incidents(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate du,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate au) {
+        return serviceRapportIncidents.incidents(du, au);
     }
 
     /**

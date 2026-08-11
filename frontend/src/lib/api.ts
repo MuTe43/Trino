@@ -66,6 +66,32 @@ export async function apiGet<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Pages through a listing endpoint until every row is collected. Lignes and
+ * gares are both small, fixed référentiel tables (~5 and ~40 rows), but
+ * pagination is clamped server-side (`PageableUtils.TAILLE_MAX`), so a single
+ * oversized `taille` is not guaranteed to return everything in one page.
+ * Shared by every caller that needs "all of a small table" rather than a page
+ * of it -- the network map, the incident declaration form and the incidents
+ * console filters all need the same full gare/ligne lists.
+ */
+export async function chargerToutesPages<T>(
+  page: (p: number, taille: number) => Promise<PageDTO<T>>,
+  taille = 100,
+): Promise<T[]> {
+  const resultat: T[] = [];
+  let p = 0;
+  for (;;) {
+    const reponse = await page(p, taille);
+    resultat.push(...reponse.contenu);
+    if (reponse.contenu.length === 0 || resultat.length >= reponse.total) {
+      break;
+    }
+    p += 1;
+  }
+  return resultat;
+}
+
 /** Builds a query string from a params object, dropping null/undefined/"" entries. */
 function requete(params: object): string {
   const entrees = Object.entries(params as Record<string, unknown>).filter(

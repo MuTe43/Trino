@@ -5,7 +5,10 @@ import org.springframework.stereotype.Repository;
 import tn.sncft.trino.analytique.dto.CaseHeatmapDTO;
 import tn.sncft.trino.analytique.dto.Granularite;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
+import tn.sncft.trino.analytique.dto.LigneIncidentsDTO;
 import tn.sncft.trino.analytique.dto.RetardParLigneDTO;
+import tn.sncft.trino.exploitation.domaine.Gravite;
+import tn.sncft.trino.exploitation.domaine.TypeIncident;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -82,6 +85,70 @@ public class AnalytiqueRepository {
         return jdbcTemplate.queryForObject(sql, (rs, ligne) -> new CompteursPonctualite(
                 rs.getLong("mesures"),
                 rs.getLong("ponctuels")), SEUIL_RETARD_MIN, date);
+    }
+
+    /**
+     * Incidents declared on one service date, split into still-open and
+     * resolved.
+     *
+     * <p>Filed by the day the incident <b>happened</b>, not by whether it is
+     * open right now: every other tile on that dashboard is a property of the
+     * day itself, and counting currently-open incidents would make a KPI for a
+     * past date change every time somebody closed an old one.
+     *
+     * <p>{@code at time zone 'Africa/Tunis'} for the same reason as the heatmap
+     * (invariant 6). Without it, everything declared between midnight and 01:00
+     * local is filed under the previous day -- an hour of every night landing on
+     * the wrong date, silently.
+     */
+    public CompteursIncidents compteursIncidents(LocalDate date) {
+        String sql = """
+                select count(*) filter (where i.statut <> 'RESOLU') as ouverts,
+                       count(*) filter (where i.statut = 'RESOLU')  as resolus
+                from incident i
+                where (i.survenu_at at time zone 'Africa/Tunis')::date = ?
+                """;
+        return jdbcTemplate.queryForObject(sql, (rs, ligne) -> new CompteursIncidents(
+                rs.getLong("ouverts"),
+                rs.getLong("resolus")), date);
+    }
+
+    /**
+     * The incidents report: one row per type and gravité over a window, with the
+     * mean time to resolution of the ones that were closed.
+     *
+     * <p>{@code delaiResolutionMoyenH} is null for a bucket where nothing has
+     * been resolved yet -- an average over no rows, not a zero. Reported as 0 it
+     * would read as "resolved instantly", which is the opposite of the truth.
+     */
+    public List<LigneIncidentsDTO> incidents(LocalDate du, LocalDate au) {
+        String sql = """
+                select i.type                                       as type,
+                       i.gravite                                    as gravite,
+                       count(*)                                     as total,
+                       count(*) filter (where i.statut = 'RESOLU')  as resolus,
+                       avg(extract(epoch from (i.resolu_at - i.survenu_at)) / 3600.0) as delai_moyen_h
+                from incident i
+                where (i.survenu_at at time zone 'Africa/Tunis')::date between ? and ?
+                group by i.type, i.gravite
+                order by count(*) desc, i.type, i.gravite
+                """;
+        return jdbcTemplate.query(sql, (rs, ligne) -> {
+            double delai = rs.getDouble("delai_moyen_h");
+            // Read IMMEDIATELY after the getDouble it refers to. wasNull()
+            // reports on the last column read from this row, so testing it after
+            // the two getLong calls below reports on `resolus` instead -- which
+            // is never null, so every unresolved bucket came back as 0.0 h,
+            // reading as "resolved instantly". Seen at runtime before this line
+            // was hoisted.
+            boolean aucuneResolution = rs.wasNull();
+            return new LigneIncidentsDTO(
+                    TypeIncident.valueOf(rs.getString("type")),
+                    Gravite.valueOf(rs.getString("gravite")),
+                    rs.getLong("total"),
+                    rs.getLong("resolus"),
+                    aucuneResolution ? null : delai);
+        }, du, au);
     }
 
     public List<RetardParLigneDTO> retardsParLigne(LocalDate date) {
@@ -189,6 +256,10 @@ public class AnalytiqueRepository {
     /** Course-level counters, before the incident figures phase 6 will add. */
     public record CompteursJour(long trains, long retards, double retardMoyenMin,
                                 long annules, long voyageursImpactes) {
+    }
+
+    /** Incidents declared on a service date, by whether they are still open. */
+    public record CompteursIncidents(long ouverts, long resolus) {
     }
 
     public record CompteursPonctualite(long mesures, long ponctuels) {

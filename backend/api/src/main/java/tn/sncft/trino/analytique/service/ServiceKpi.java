@@ -38,6 +38,11 @@ public class ServiceKpi {
     public KpiJourDTO kpiDuJour(LocalDate date) {
         AnalytiqueRepository.CompteursJour compteurs = analytiqueRepository.compteursDuJour(date);
         AnalytiqueRepository.CompteursPonctualite ponctualite = analytiqueRepository.ponctualiteDuJour(date);
+        // Both counts partition the incidents DECLARED that day, so a KPI for a
+        // past date does not change every time somebody resolves an old
+        // incident. Every other tile is a property of the day itself; these two
+        // now are as well.
+        AnalytiqueRepository.CompteursIncidents incidents = analytiqueRepository.compteursIncidents(date);
 
         return new KpiJourDTO(
                 date,
@@ -46,12 +51,8 @@ public class ServiceKpi {
                 arrondir(compteurs.retardMoyenMin()),
                 arrondir(ponctualite.taux(), 4),
                 ponctualite.mesures(),
-                // phase 6 -- the incident table does not exist yet. Deliberately
-                // a literal zero rather than an empty table queried for nothing:
-                // creating the table early would take schema ownership from the
-                // phase that needs it, and both answers are the same 0.
-                0L,
-                0L,
+                incidents.ouverts(),
+                incidents.resolus(),
                 compteurs.annules(),
                 compteurs.voyageursImpactes());
     }

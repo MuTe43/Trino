@@ -128,6 +128,32 @@ public class ConfigurationSecurite {
                         // telling them their date format was wrong.
                         .requestMatchers(HttpMethod.GET, "/api/v1/tableau-bord/**", "/api/v1/rapports/**")
                         .hasRole("RESPONSABLE_EXPLOITATION")
+                        // Incidents. This rule MUST stay above the general
+                        // /incidents/** ones: matchers are evaluated in order and
+                        // the first match wins, so the broader POST rule below
+                        // would otherwise let an agent resolve.
+                        //
+                        // Resolution is its own URL precisely so this check can
+                        // live here, in the filter chain. Expressed instead as
+                        // "PATCH with statut=RESOLU", the distinction would be a
+                        // body value, which the filter chain cannot see -- and an
+                        // agent sending a malformed body that also asked to
+                        // resolve would get 400 VALIDATION_ECHOUEE instead of
+                        // 403, the exact failure invariant 9 documents.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents/*/resolution")
+                        .hasRole("RESPONSABLE_EXPLOITATION")
+                        // Declaring and editing: an agent's job, and the
+                        // responsable's too. ADMINISTRATEUR is excluded for the
+                        // same reason as the dashboards -- a different duty.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents", "/api/v1/incidents/**")
+                        .hasAnyRole("AGENT_CIRCULATION", "RESPONSABLE_EXPLOITATION")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/incidents/**")
+                        .hasAnyRole("AGENT_CIRCULATION", "RESPONSABLE_EXPLOITATION")
+                        // Reads are not public: the passenger portal learns about
+                        // incidents from the ligne SSE channel, never from this
+                        // list, which carries who declared what.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/incidents", "/api/v1/incidents/**")
+                        .hasAnyRole("AGENT_CIRCULATION", "RESPONSABLE_EXPLOITATION")
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(pointEntreeAuthentification())

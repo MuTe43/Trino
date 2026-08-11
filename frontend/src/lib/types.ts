@@ -301,24 +301,113 @@ export type TypeIncident =
   | "AUTRE";
 
 /**
- * `event: incident`. PROVISIONAL: no `EvenementIncident` record exists yet
- * under backend/api/.../diffusion (the incidents feature lands in a later
- * phase — see docs/phases). Shaped from the `incident` table in
- * docs/architecture/domain-model.md pending the real backend record; update
- * this type the moment that record exists rather than trusting this shape.
+ * `event: incident`. Mirrors exploitation/evenement/EvenementIncident, confirmed
+ * against a live `/stream` frame in phase 6 (see docs/phases/phase-6.md, "Three
+ * things to close first" #1). Only the delta carries coordinates -- the REST
+ * `IncidentDTO` below does not -- because a ligne-wide incident tied to a course
+ * needs its point computed from that course's live position, which only the
+ * streaming side has.
+ *
+ * `ligneId`/`gareId`/`courseId` are independently nullable: an incident is
+ * required to carry at least one of gare/ligne/course (never all three), and
+ * `ligneId` is populated even for a course-only incident (derived from the
+ * course's ligne) — see the acceptance trace in phase-6.md.
  */
 export interface EvenementIncident {
+  incidentId: number;
+  type: TypeIncident;
+  gravite: Gravite;
+  statut: StatutIncident;
+  description: string;
+  survenuAt: string;
+  ligneId: number | null;
+  gareId: number | null;
+  courseId: number | null;
+  /** Null for an incident with no single point (a ligne-wide incident with
+   * neither gare nor a positioned course) -- render it in a list, never guess
+   * a location for it. */
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/** `{id, nom}` shape of `IncidentDTO.declarePar` — same shape as `GareBreve`/
+ * `LigneBreve` but kept distinct since it names a person, not a référentiel row. */
+export interface UtilisateurBref {
+  id: number;
+  nom: string;
+}
+
+/** `{id, numeroTrain}` shape of `IncidentDTO.course` — a course is identified
+ * by its train number in the incidents console, not by its id. */
+export interface CourseBreve {
+  id: number;
+  numeroTrain: string;
+}
+
+/**
+ * `GET /incidents`, `/incidents/ouverts`, `/incidents/{id}` and the body of
+ * `POST /incidents` / `PATCH /incidents/{id}` / `POST .../resolution`.
+ * Mirrors exploitation/dto/IncidentDTO.
+ *
+ * `causeAssociee` is `TypeIncident.causeAssociee()` -- the `CauseRetard` this
+ * type *suggests* on a linked course. It is returned so the declaration form
+ * can preview it without the frontend restating the mapping table (see
+ * docs/architecture/domain-model.md, "Incident type to delay cause"); it never
+ * overwrites a `causeRetard` an agent set explicitly.
+ */
+export interface IncidentDTO {
   id: number;
   type: TypeIncident;
+  causeAssociee: CauseRetard;
   description: string;
   survenuAt: string;
   gare: GareBreve | null;
   ligne: LigneBreve | null;
-  courseId: number | null;
+  course: CourseBreve | null;
   gravite: Gravite;
-  impact: string | null;
+  impact: string;
   statut: StatutIncident;
+  declarePar: UtilisateurBref;
   resoluAt: string | null;
+}
+
+/**
+ * Body of `POST /incidents`. Mirrors exploitation/dto/IncidentCreateDTO.
+ *
+ * At least one of `gareId`/`ligneId`/`courseId` is required server-side (400
+ * `VALIDATION_ECHOUEE`, `details[].champ === "localisationRenseignee"` when
+ * none is set). `actionCourse` may only be `"ARRET_EXCEPTIONNEL"` or
+ * `"ANNULE"` and requires `courseId` (`champ === "actionCourseRattachee"` /
+ * `"actionCourseAutorisee"`); `causeRetard` also requires `courseId`
+ * (`champ === "causeRattachee"`). `statut` is absent on purpose: a declared
+ * incident is always `OUVERT`.
+ */
+export interface CorpsIncident {
+  type: TypeIncident;
+  description: string;
+  /** ISO-8601 with an offset -- constructed client-side from a Africa/Tunis
+   * wall-clock input, never the browser's own timezone. */
+  survenuAt: string;
+  gareId?: number;
+  ligneId?: number;
+  courseId?: number;
+  gravite: Gravite;
+  impact: string;
+  actionCourse?: "ARRET_EXCEPTIONNEL" | "ANNULE";
+  causeRetard?: CauseRetard;
+}
+
+/**
+ * Body of `PATCH /incidents/{id}`. Mirrors exploitation/dto/IncidentUpdateDTO.
+ * Every field is optional; a field left out is left alone. `statut` may only
+ * ever be `"EN_COURS"` here -- resolving is the dedicated
+ * `POST /incidents/{id}/resolution`, `RESPONSABLE_EXPLOITATION` only.
+ */
+export interface CorpsModificationIncident {
+  statut?: "EN_COURS";
+  gravite?: Gravite;
+  description?: string;
+  impact?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,9 +425,8 @@ export interface EvenementIncident {
  * `voyageursImpactes` is ESTIMATED from train capacity on delayed courses. It
  * is modelled, never measured, and the UI has to say so.
  *
- * `incidentsOuverts` / `incidentsResolus` are hardcoded 0 until phase 6 creates
- * the incident table. If phase 6 is cut, remove the two tiles rather than leave
- * them showing zero — a permanent zero reads as a broken feature.
+ * `incidentsOuverts` / `incidentsResolus` come from the `incident` table
+ * (phase 6) and are real counts.
  */
 export interface KpiJourDTO {
   date: string;
