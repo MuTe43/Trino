@@ -424,13 +424,214 @@ a demandé — sans exiger HTTP/2, donc sans TLS, pour une démonstration locale
 
 ---
 
+### Phase 5 — tableaux de bord, exports et multiplexage SSE
+
+**Une limite du protocole, mesurée plutôt que supposée.** Un navigateur
+n'autorise qu'environ six connexions simultanées par origine en HTTP/1.1, et ce
+budget est partagé entre les flux SSE et tous les appels REST vers la même
+origine. Avec un canal par ligne, la carte au zoom réseau complet en occupait
+cinq. La mesure a corrigé l'estimation : la saturation n'arrive pas à cinq mais à
+six — cinq flux laissent exactement une socket libre, et c'est la requête REST
+suivante, celle d'un détail de train ouvert par-dessus la carte, qui n'est jamais
+servie. L'application paraît figée, au zoom par défaut, sans aucune erreur.
+
+La réponse est le multiplexage : une seule connexion portant une liste
+d'abonnements explicite, l'identité du canal voyageant dans la charge utile.
+Douze canaux ne coûtent alors plus rien. La segmentation est préservée — le
+client ne reçoit que ce qu'il a nommé — sans exiger HTTP/2, donc sans TLS, pour
+une démonstration locale.
+
+**Un défaut de routage silencieux dans ce même multiplexage.** Une course publie
+vers sa ligne *et* vers chaque gare qu'elle n'a pas encore dépassée. La
+dé-duplication qui évite d'envoyer deux fois la même trame à un client
+supprimait aussi les étiquettes des autres canaux : la trame ne nommait que le
+premier. Le client route sur ce champ, donc une page affichant à la fois la carte
+(`ligne:1`) et un tableau de gare (`gare:7`) recevait la donnée sur la carte et
+jamais sur le tableau. Aucune erreur, aucune reconnexion : un tableau qui cesse
+simplement de bouger. La trame porte désormais la liste complète des canaux
+concernés, toujours envoyée une seule fois.
+
+**Des jours entiers ou parfaitement à l'heure, ou entièrement en retard.** Le
+générateur d'historique dérivait sa graine de la clé naturelle de la course et la
+passait directement à `new Random(…)`. La première valeur tirée par ce générateur
+est quasi linéaire en la graine — et cette première valeur était précisément la
+porte de perturbation. Les jours synthétisés sortaient donc bimodaux. Corrigé en
+faisant passer la graine par un finaliseur murmur3. Dans la même passe, un appel
+`poisson(…)` laissé dans une condition de boucle était retiré à chaque itération
+au lieu d'une fois.
+
+**Une régression d'export invisible en test.** Écrire le fichier via un
+`StreamingResponseBody` bascule la requête en mode asynchrone. `FiltreJwt` est un
+`OncePerRequestFilter` et ignore les répartitions asynchrones ; le
+`AuthorizationFilter` de Spring Security, lui, ne les ignore pas. La règle de
+rôle refusait donc la seconde répartition, après que l'en-tête `text/csv` a déjà
+été validé : le fichier se téléchargeait correctement et le serveur écrivait
+trois traces d'erreur par export. Écrit désormais de façon synchrone.
+
+**Une requête de contrôle qui confirme le bug qu'elle devait détecter.**
+`extract(hour from timestamptz)` dépend du `TimeZone` de session, que le pilote
+JDBC règle depuis la JVM. Une requête de vérification écrite sans `at time zone`
+donne exactement le même résultat qu'un dépôt qui l'a oublié aussi. Le contrôle
+n'en est pas un : il faut fixer le fuseau explicitement des deux côtés.
+
+**Un test instable de notre fait.** `@EnableScheduling` porte sur la classe
+`@SpringBootConfiguration` dont une tranche `@WebMvcTest` s'amorce : le battement
+de cœur SSE était donc réellement planifié à l'intérieur de la tranche, et son
+premier tir tombait avant ou après l'abonnement du test selon la charge de la
+machine. Vert isolé, rouge dans la suite complète. La correction ne consiste pas
+à réduire la fenêtre de course — il n'en reste aucune à réduire — mais à rendre
+la mesure insensible : on compare désormais une connexion à quatre canaux et une
+à un seul, un battement parasite atteignant les deux et s'annulant.
+
+**Une ponctualité qui aurait commencé chaque matin à 100 %.** Le taux ne compte
+que les arrêts réellement atteints. Un arrêt encore devant son train porte un
+retard de zéro : le compter reviendrait à noter à l'heure tout le reste de la
+journée non encore parcourue. Le dénominateur est publié à part et vaut zéro en
+début de service — l'interface affiche alors « — », jamais « 0 % ».
+
+### Phase 6 — incidents et console d'exploitation
+
+**Une course annulée pouvait ressusciter.** L'action d'agent n'avait pas de garde
+sur les états terminaux, donc `ANNULE → ARRET_EXCEPTIONNEL` était acceptée — et
+`ARRET_EXCEPTIONNEL` est délibérément non terminal, si bien que le ping suivant
+re-dérivait la course vers `EN_CIRCULATION`. Garder uniquement le moteur
+protégeait le flux et laissait la console comme seconde porte d'entrée. Une même
+règle métier doit être gardée à toutes ses entrées, pas à la plus visible.
+
+**Un abonnement à quarante-cinq canaux, explicite mais global de fait.** La carte
+de supervision s'abonnait aux cinq lignes et aux quarante gares. La liste était
+nommée, donc conforme à la lettre de la règle de segmentation, et contraire à son
+intention : un client recevait tout le réseau. La cause était en amont — un
+incident rattaché à une seule gare ne publiait que sur `gare:{id}`. Le diffuseur
+propage désormais un tel incident vers les lignes desservant cette gare, et la
+carte tient cinq canaux. Corriger le symptôme aurait laissé la cause en place.
+
+**« Résolu instantanément », l'exact inverse de la vérité.** Le rapport
+d'incidents lisait `rs.wasNull()` après avoir déjà lu deux autres colonnes. Cette
+méthode rapporte sur la *dernière* colonne lue, pas sur celle qu'on croit
+interroger : tous les incidents non résolus ressortaient à 0,0 h. Un chiffre
+faux, plausible, et flatteur.
+
+**Un délai de résolution négatif de cinq heures.** L'horodatage de résolution
+était pris sur l'horloge de circulation — celle du flux de positions, décalée de
+plusieurs heures sous simulateur accéléré — tandis que l'heure de survenue venait
+de la console, donc de l'horloge de l'opérateur. Deux horloges pour deux bornes
+du même intervalle. Les deux viennent maintenant de l'opérateur.
+
+**Une erreur de validation sans destination d'affichage.** Une contrainte ajoutée
+au DTO après l'écriture du formulaire renvoyait une clé qu'aucun champ ne
+connaissait : l'utilisateur lisait « le formulaire contient des erreurs » avec
+tous les champs intacts. Le contrat d'erreur n'est complet que si chaque clé
+retournée correspond à un champ affiché.
+
+**Un paramètre dont PostgreSQL ne peut pas déduire le type.** Un filtre optionnel
+écrit `:param is null or colonne = :param` produit `could not determine data type
+of parameter $7` — un 500 sur la vue par défaut de la console. Comparé à une
+colonne, le type est inférable ; seul, il ne l'est pas. Remplacé par des
+spécifications JPA, ce que la phase 7 a repris d'emblée.
+
+### Phase 7 — console d'administration
+
+**Une adresse en casse mixte ne pouvait jamais se connecter.** La création
+enregistrait l'adresse en minuscules, l'authentification la cherchait telle que
+saisie. Un compte créé sous `Prenom.Nom@SNCFT.tn` était donc inatteignable avec
+l'adresse même que l'administrateur venait de transmettre — et chaque tentative
+alimentait le journal avec un identifiant utilisateur nul, c'est-à-dire une piste
+d'audit affirmant qu'aucun compte ne correspondait à cette adresse alors que le
+compte existait. Invisible à la compilation comme au build, parce que les quatre
+comptes de démonstration sont déjà en minuscules. Une seule définition de
+« la même adresse » est désormais partagée par les deux chemins.
+
+**Une coordonnée vide devenait (0, 0).** Le formulaire de gare convertissait un
+champ vide en zéro, et la latitude n'a qu'une contrainte de non-nullité, sans
+bornes : zéro était donc *accepté*. La carte publique ajuste son cadrage initial
+sur l'ensemble des gares, si bien qu'une seule station placée dans le golfe de
+Guinée dézoome la carte voyageur sur l'océan. Le formulaire envoie maintenant
+`null`, refusé avec l'erreur portée par les bons champs. Une valeur par défaut
+saisie sans intention détruisait la vue principale du produit.
+
+**La même conversion réécrivait des colonnes nullables.** Les trente-neuf gares
+du jeu de données portent un responsable nul ; un simple renommage y écrivait une
+chaîne vide. L'écran des trains, écrit dans la même phase, faisait déjà
+correctement la distinction — l'incohérence était interne à une seule phase.
+
+**La documentation promettait moins que le code.** Trois documents affirmaient
+qu'un jeton d'accès déjà émis restait valable jusqu'à trente minutes après une
+désactivation. Le filtre relit le compte à chaque requête : l'effet est immédiat.
+Le comportement était juste et la documentation fausse — le sens dans lequel
+l'erreur se propage ensuite à tout ce qui s'appuie dessus.
+
+**Un mot de passe généré par le serveur, et nommé honnêtement.** L'administrateur
+ne choisit jamais le mot de passe d'autrui : le serveur en génère un, le renvoie
+une seule fois, et n'en conserve que l'empreinte. Le champ s'appelle
+*initial* et non *temporaire*, parce que *temporaire* promettrait un changement
+forcé à la première connexion — un drapeau, un point d'entrée, une redirection et
+une migration touchant les comptes de démonstration. Nommer *temporaire* une
+chose qui ne l'est pas serait une promesse que le système ne tient pas, et le
+prochain lecteur du champ y croirait.
+
+### Phase 8 — notifications et alertes
+
+**Une prise en charge trop large transforme une panne en silence.** Une recherche
+au référentiel renvoyant `null` produisait une `NullPointerException` qui
+remontait dans un `catch (RuntimeException)` de l'écouteur, journalisée en
+avertissement — et la notification n'était tout simplement jamais émise. Rien
+n'échouait visiblement ; il n'y avait rien à déboguer. Ce sont les tests qui
+l'ont révélé, en affirmant la présence de lignes plutôt que l'absence d'erreurs.
+Une recherche infructueuse coûte désormais sa localisation à la notification, pas
+la notification.
+
+**Une annotation qui casse une suite entière.** Le limiteur de débit, déclaré
+comme composant simple, implémente un `WebMvcConfigurer` : toute tranche de test
+MVC charge ce type, mais pas un composant ordinaire, et le contexte échouait donc
+dans des tests sans aucun rapport. Un défaut dont l'emplacement n'indique rien sur
+la cause.
+
+**Un cookie pour toute identité.** Exiger un compte pour suivre un train
+livrerait la fonctionnalité à personne : un voyageur qui vérifie si son train a du
+retard n'a pas de compte et n'en créera pas pour un trajet. Le serveur émet donc
+un jeton aléatoire au premier abonnement et le renvoie dans un cookie `HttpOnly`.
+C'est un jeton porteur : quiconque le détient lit les notifications de ce voyageur.
+Il n'apparaît donc jamais dans un corps de réponse, une URL, ni un journal, et le
+canal SSE correspondant est dérivé côté serveur au lieu d'être nommé par le
+client — la liste d'abonnements de `/stream` étant fournie par le client, un
+paramètre pour ce canal permettrait de lire les notifications d'autrui.
+
+**Un détail de configuration dont le symptôme est l'absence de symptôme.** Le
+cookie est en `SameSite=Lax`. Le portail et l'API sont deux origines distinctes
+mais le même *site* — cet attribut ignore le port. `None` exigerait `Secure`,
+donc en HTTP local le navigateur abandonnerait le cookie et la cloche de
+notifications ne se lierait jamais, sans le moindre message d'erreur.
+
+**Une dé-duplication comptée en minutes simulées.** Une course qui franchit un
+seuil de retard émet à chaque ping tant qu'elle reste au-dessus. La garde autorise
+une notification par abonnement, évènement et course toutes les trente minutes
+d'horloge de circulation — pas d'horloge murale. Au facteur 20 de la
+démonstration, trente minutes simulées valent quatre-vingt-dix secondes réelles ;
+une fenêtre en temps réel laisserait passer vingt fois trop de messages, c'est-à-dire
+des centaines pendant une soutenance. À vitesse réelle, les deux horloges
+coïncident.
+
+**Une trace même quand le canal est mort.** La ligne de notification est écrite
+*avant* la tentative d'envoi et mise à jour après. Un canal indisponible laisse
+donc une ligne en échec portant sa cause — la différence entre « le serveur SMTP
+était injoignable à 08:14 » et une notification qui n'a silencieusement jamais
+existé. Vérifié en pointant SMTP vers un port fermé : l'ingestion continue de
+répondre en quelques dizaines de millisecondes, et la ligne en échec porte le
+message du serveur de messagerie.
+
+---
+
 ## 4. Ce qui n'a pas été construit, et pourquoi
 
 | Demandé | Livré | Raison |
 |---|---|---|
 | Disponibilité 99,9 % | Sondes de santé, dégradation maîtrisée, écart documenté | Non vérifiable sur une démo locale |
-| Canaux SMS / e-mail / push | Interface d'adaptateur + canal in-app | Temps ; quatre intégrations à moitié fonctionnelles valent moins qu'un canal qui marche et une conception claire |
+| Canal SMS | Adaptateur en forme de passerelle, qui journalise | Aucun compte opérateur n'existe ; le point d'intégration est marqué. `IN_APP` et `EMAIL` fonctionnent réellement — courriel remis dans une vraie boîte de réception |
+| Notifications push navigateur | Non implémenté | Nécessite des clés VAPID et un service worker ; hors périmètre du délai |
 | Export PDF | CSV + XLSX | Temps |
+| Changement de mot de passe imposé à la première connexion | Mot de passe généré, nommé *initial* et non *temporaire* | Le construire toucherait les comptes de démonstration ; le nom retenu ne promet rien de faux |
+| Rattachement d'un abonnement anonyme à un compte | Les deux identités ne fusionnent jamais | Demanderait une migration à la connexion et une règle de conflit ; énoncé plutôt que dissimulé |
 
 Chaque ligne est une décision de périmètre, pas un oubli. C'est la différence
 que le jury regardera.

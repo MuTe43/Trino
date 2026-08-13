@@ -21,7 +21,27 @@ docs/RAPPORT-NOTES.md                                     material for the repor
 scripts/demo.sh                                           reset + seed + accelerate
 ```
 
-## Sweep-up — carried from phases 3 through 7
+## Never hardcode an id or a name in a check
+
+Three acceptance commands across this project could not pass as written, all for
+the same reason: `DR201` (phase 4) was an example train that was never seeded,
+and `cibleId: 1` (phase 8) was a backfilled course already at
+`TERMINUS_ATTEINT`, which can never be late again. Both looked correct and both
+measured nothing.
+
+Every check and every line of `scripts/demo.sh` derives its subject from the
+database at run time:
+
+```bash
+COURSE=$(docker exec trino-db psql -U trino -tAc \
+  "select id from course where date_service = current_date
+   and statut in ('EN_CIRCULATION','A_QUAI') order by depart_theorique limit 1")
+```
+
+A check that passes against a row which cannot exercise the behaviour is worse
+than a failing one, because it is filed as evidence.
+
+## Sweep-up — carried from phases 3 through 8
 
 Each was correctly deferred; this is where they land. None is large.
 
@@ -39,6 +59,14 @@ Each was correctly deferred; this is where they land. None is large.
 - **`/ingest/*` rate limit** (120/min/key), specified in `api-contract.md` and
   never built.
 - **`.gitignore` misses `*.log`.**
+- **`EN_ATTENTE` notifications are never swept.** A process killed mid-dispatch
+  left 344 rows stranded — the `ECHEC` path covers an adapter that throws, not a
+  JVM that dies. A startup sweep moving stale `EN_ATTENTE` rows to `ECHEC` with
+  a stated cause, plus the same on a schedule.
+- **`Dedoublonneur` and `EtatCirculationStore` eviction**, and `notification`
+  growth alongside `position_course`.
+- **`/auth/login` rate limit** (10/min/IP), declared since phase 0. `LimiteurDebit`
+  exists now, so this and `/ingest/*` are one line each in `ConfigurationWeb`.
 - **`requeteAuthJson` has three copies** — `auth.ts` holds the shared one;
   `incidents.ts` and `tableauBord.ts` still carry their own.
 - **`TableauDepartsGare` has no periodic REST resync**, unlike the kiosk. A
@@ -47,6 +75,24 @@ Each was correctly deferred; this is where they land. None is large.
 Explicitly **not** doing: forced password change on first login. It would catch
 the four seeded demo accounts and risks breaking the login path on demo day.
 Record it as future work in the report instead.
+
+## Two things to write down rather than build
+
+**A LIGNE or GARE subscriber gets one notification per late course.** Measured:
+124 across 62 courses in 85 s at x20. That is the specified key implemented
+faithfully — the bound is per course, not per subscriber — and at a busy station
+it is also an honest picture of the day. It is not a demo risk either, because
+the portal only offers "Suivre ce train": LIGNE and GARE subscriptions exist at
+the API and have no button. The answer at real scale is a digest, not a tighter
+cap; record it as future work.
+
+**The account-subscription path cannot be reached from the browser.**
+`EventSource` cannot send an `Authorization` header, so the portal never
+authenticates its stream and every subscription made through the UI is anonymous.
+The `utilisateur_id` branch is built and tested but unexercised by a human. Say
+so plainly — the fix is a token in a cookie the stream endpoint reads, which is
+what the anonymous path already does, and it is a design note rather than a
+defect.
 
 ## Tests
 

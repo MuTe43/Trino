@@ -146,6 +146,68 @@ Two check constraints beyond the column types (V7):
 `adresse_ip` varchar(45) · `user_agent` text · `succes` boolean ·
 `horodatage` timestamptz
 
+### notification
+
+**abonnement** — who wants to hear about what (V8).
+`id` bigserial PK · `utilisateur_id` FK null · `jeton_anonyme` varchar(64) null ·
+`cible_type` enum CibleType · `cible_id` bigint · `canaux` varchar(80) (CSV of
+CanalType) · `email` varchar(160) null · `cree_at` timestamptz
+
+**Exactly one identity per row**, not "at least one":
+
+- `chk_abonnement_identite` — `num_nonnulls(utilisateur_id, jeton_anonyme) = 1`
+- `uq_abonnement_anonyme` on (`jeton_anonyme`,`cible_type`,`cible_id`) where the
+  token is not null
+- `uq_abonnement_utilisateur` on (`utilisateur_id`,`cible_type`,`cible_id`) where
+  the account is not null
+
+Two partial indexes rather than one plain unique: Postgres treats nulls as
+distinct, so a single unique over the anonymous columns constrains that half only
+and lets an account subscriber duplicate the same subscription without limit. And
+"exactly one" rather than "at least one" because a signed-in browser still
+carries the anonymous cookie — a row holding both identities satisfies both
+uniques, so the same person accumulates two subscriptions to one train and is
+notified twice for one event.
+
+`email` is not in the phase file's column list. It has to be: `POST /abonnements`
+accepts an address, and the EMAIL channel sends long after the request that
+created the row is gone. Null for an account subscription, which falls back to
+`utilisateur.email`.
+
+**regle_alerte** — what the administrator configures (V8).
+`id` bigserial PK · `evenement` enum Evenement · `seuil_min` smallint null ·
+`gravite_min` enum Gravite null · `canaux` varchar(80) · `actif` boolean ·
+`modifie_par` FK utilisateur null
+
+`chk_regle_seuil` — `seuil_min` is required for `RETARD_SEUIL` and forbidden for
+every other event. A delay rule with no threshold fires on every revision of
+every estimate. `modifie_par` is null until a human edits the row: the four
+defaults V8 seeds were configured by nobody, and stamping them with `utilisateur
+1` would put a name against a decision that person never made.
+
+**notification** — what was actually emitted (V8).
+`id` bigserial PK · `abonnement_id` FK null · `evenement` enum Evenement ·
+`course_id` FK null · `destinataire` varchar(160) · `canal` enum CanalType ·
+`sujet` varchar(200) · `contenu` text · `statut` enum StatutNotification ·
+`envoye_at` timestamptz null · `erreur` text null
+index on (`abonnement_id`,`envoye_at` desc)
+
+`evenement` and `course_id` are also beyond the phase file's list, and also
+forced: the deduplication key is (subscription, event, course), so without them
+the guard cannot be checked from outside the process — which is exactly what the
+acceptance query groups on.
+
+The row is written **before** the dispatch is attempted and updated after. A
+channel that is down has to leave evidence: an `ECHEC` row with its cause is the
+difference between "SMTP was unreachable at 08:14" and a notification that
+silently never happened. `envoye_at` is null while `EN_ATTENTE` and is stamped
+when the attempt completes, on success and failure alike.
+
+**Indexes carried in with V8.** `journal_connexion` gained
+`idx_journal_horodatage` and `idx_journal_utilisateur`: phase 7 built
+`GET /journal-connexions`, which filters and sorts on exactly those columns, but
+was forbidden a migration.
+
 ## Enums
 
 ```
@@ -160,6 +222,10 @@ TypeIncident     PANNE_LOCOMOTIVE, DEFAUT_SIGNALISATION, ACCIDENT,
 Gravite          MINEURE, MOYENNE, MAJEURE, CRITIQUE
 StatutIncident   OUVERT, EN_COURS, RESOLU
 Role             VOYAGEUR, AGENT_CIRCULATION, RESPONSABLE_EXPLOITATION, ADMINISTRATEUR
+CanalType        IN_APP, EMAIL, SMS, AFFICHAGE
+CibleType        COURSE, LIGNE, GARE
+Evenement        RETARD_SEUIL, COURSE_ANNULEE, INCIDENT_DECLARE, INCIDENT_RESOLU
+StatutNotification  EN_ATTENTE, ENVOYE, ECHEC
 ```
 
 ## Incident type to delay cause

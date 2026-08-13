@@ -25,6 +25,7 @@ import tn.sncft.trino.iam.repo.UtilisateurRepository;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Optional;
 
 /**
  * Orchestrates login, refresh and logout, and exposes the read-only
@@ -133,6 +134,31 @@ public class UtilisateurService {
     @Transactional(readOnly = true)
     public Page<UtilisateurDTO> lister(int page, int taille) {
         return utilisateurRepository.findAll(PageableUtils.de(page, taille)).map(this::versDTO);
+    }
+
+    /**
+     * The account behind an id, or empty when there is none or it is
+     * deactivated. Added in phase 8 for the notification engine, which has to
+     * resolve a subscriber before it addresses anything to them.
+     *
+     * <p>Not role-gated, unlike {@link #trouverParId} beneath it, and the
+     * distinction is deliberate: this is a module-to-module lookup with no
+     * controller behind it and no way to reach it over HTTP. Gating it would
+     * only mean the engine failed with {@code AccessDeniedException} on its own
+     * async thread, where no security context exists and nothing would surface
+     * the error.
+     *
+     * <p>Folding "exists" and "is active" into one answer is what stops a
+     * deactivated account from still being notified. {@code abonnement} rows
+     * survive deactivation because a user row is never deleted (decision 11), so
+     * without this check the subscriptions of a closed account keep producing
+     * mail indefinitely.
+     */
+    @Transactional(readOnly = true)
+    public Optional<UtilisateurDTO> trouverActifParId(Long id) {
+        return utilisateurRepository.findById(id)
+                .filter(Utilisateur::isActif)
+                .map(this::versDTO);
     }
 
     @PreAuthorize("hasRole('ADMINISTRATEUR')")

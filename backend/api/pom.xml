@@ -38,6 +38,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        <!-- SMTP for the EMAIL notification channel (phase 8). Version comes
+             from the Boot BOM, so nothing is pinned here. It talks to Mailpit
+             in docker-compose: real SMTP, real inbox, no credentials, no cost. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>

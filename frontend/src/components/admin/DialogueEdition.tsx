@@ -16,7 +16,14 @@ import { ApiError } from "@/lib/api";
  * refused), so it lands in the same block.
  */
 
-export type TypeChamp = "texte" | "nombre" | "selection" | "booleen" | "lecture";
+/**
+ * `multi` was added in phase 8 for the alert rules' channel set. Its value
+ * travels as a comma-joined string ("IN_APP,EMAIL") rather than as an array,
+ * because {@link ValeursFormulaire} is flat by design — widening it to hold
+ * arrays would touch every screen for one field on one of them. The caller
+ * splits it on the way out, which is one line and keeps this dialog schema-driven.
+ */
+export type TypeChamp = "texte" | "nombre" | "selection" | "booleen" | "lecture" | "multi";
 
 export interface ChampFormulaire {
   nom: string;
@@ -220,6 +227,39 @@ export default function DialogueEdition({
                     onChange={(e) => definir(champ.nom, e.target.checked)}
                     className="h-4 w-4 self-start"
                   />
+                ) : null}
+
+                {champ.type === "multi" ? (
+                  <div id={idChamp} className="flex flex-wrap gap-3">
+                    {(champ.options ?? []).map((option) => {
+                      const selection = String(valeur ?? "")
+                        .split(",")
+                        .filter((v) => v !== "");
+                      const coche = selection.includes(option.valeur);
+                      return (
+                        <label
+                          key={option.valeur}
+                          className="flex items-center gap-1.5 text-sm text-encre"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={coche}
+                            onChange={(e) =>
+                              definir(
+                                champ.nom,
+                                (e.target.checked
+                                  ? [...selection, option.valeur]
+                                  : selection.filter((v) => v !== option.valeur)
+                                ).join(","),
+                              )
+                            }
+                            className="h-4 w-4"
+                          />
+                          {option.libelle}
+                        </label>
+                      );
+                    })}
+                  </div>
                 ) : null}
 
                 {champ.aide ? <p className="text-xs text-ardoise-400">{champ.aide}</p> : null}

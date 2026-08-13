@@ -22,14 +22,19 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Fan-out for the live channels. SSE rather than WebSocket because traffic is
  * server to client only (decision 3).
  *
- * <p>Channels are scoped: {@code ligne:{id}} and {@code gare:{id}}, never a
- * global one. A station board subscribes to its own gare and receives nothing
- * about the rest of the network.
+ * <p>Channels are scoped: {@code ligne:{id}}, {@code gare:{id}} and, since
+ * phase 8, {@code abonne:{identité}} -- never a global one. A station board
+ * subscribes to its own gare and receives nothing about the rest of the network.
  *
  * <p>A subscriber may hold several channels on one connection ({@link
  * #abonnerMultiplex}). That is a transport change, not a scoping change: the
  * channel set is still whatever the client explicitly asked for, so invariant 5
  * holds -- nobody is ever handed the whole network.
+ *
+ * <p>The {@code abonne:} kind is the exception to "whatever the client asked
+ * for", and in the safe direction: the client cannot name it at all.
+ * {@code StreamController} derives it from the caller's own credential, so
+ * there is no request that subscribes to somebody else's notifications.
  */
 @Component
 public class HubSse {
@@ -46,6 +51,24 @@ public class HubSse {
      */
     private static final long SANS_EXPIRATION = 0L;
 
+    /**
+     * Channel kind whose identity is a credential rather than a public id.
+     * Frames are tagged with {@link #CANAL_ABONNE_ALIAS} on the way out --
+     * see {@link AbonnementSse#charge}.
+     */
+    public static final String PREFIXE_ABONNE = "abonne:";
+
+    /**
+     * What a client sees instead of its own {@code abonne:} channel name, and
+     * what it subscribes to on the client side.
+     *
+     * <p>A connection only ever carries its own such channel, so there is
+     * nothing to disambiguate -- and tagging the frame with the real name would
+     * hand the token back to JavaScript, undoing the {@code HttpOnly} cookie it
+     * arrived in.
+     */
+    public static final String CANAL_ABONNE_ALIAS = PREFIXE_ABONNE + "moi";
+
     private final Map<String, List<AbonnementSse>> abonnes = new ConcurrentHashMap<>();
 
     /**
@@ -61,6 +84,22 @@ public class HubSse {
 
     public static String canalGare(Long gareId) {
         return "gare:" + gareId;
+    }
+
+    /**
+     * One anonymous subscriber's private channel.
+     *
+     * <p>The {@code j} discriminator keeps the token space and the account-id
+     * space apart: without it a subscriber whose token happened to be the
+     * string {@code "12"} would share a channel with account 12.
+     */
+    public static String canalAbonneJeton(String jeton) {
+        return PREFIXE_ABONNE + "j" + jeton;
+    }
+
+    /** One signed-in subscriber's private channel. */
+    public static String canalAbonneCompte(Long utilisateurId) {
+        return PREFIXE_ABONNE + "u" + utilisateurId;
     }
 
     /**
@@ -186,9 +225,22 @@ public class HubSse {
         }
     }
 
-    /** Only ever used to name a channel in a log line. */
+    /** Only ever used to name a channel in a log line, so it is masked. */
     private String premierCanal(AbonnementSse abonnement) {
-        return abonnement.canaux().stream().findFirst().orElse("?");
+        return masquerPourJournal(abonnement.canaux().stream().findFirst().orElse("?"));
+    }
+
+    /**
+     * Keeps a subscriber token out of the logs.
+     *
+     * <p>An {@code abonne:} channel name embeds a bearer credential. Every log
+     * line in this class names the channel it was working on, so without this a
+     * single DEBUG level would write a working token to disk for every dropped
+     * connection and every heartbeat — and phase 8, decision 12 and
+     * {@code JetonAbonne}'s own javadoc all promise it is never logged.
+     */
+    private static String masquerPourJournal(String canal) {
+        return canal.startsWith(PREFIXE_ABONNE) ? CANAL_ABONNE_ALIAS : canal;
     }
 
     /**
@@ -196,7 +248,8 @@ public class HubSse {
      * tab close -- that is normal traffic, not an incident, so none of these
      * branches log above DEBUG.
      */
-    private void envoyer(String canal, AbonnementSse abonnement, SseEmitter.SseEventBuilder evenement) {
+    private void envoyer(String canalBrut, AbonnementSse abonnement, SseEmitter.SseEventBuilder evenement) {
+        String canal = masquerPourJournal(canalBrut);
         try {
             abonnement.emitter().send(evenement);
         } catch (AsyncRequestNotUsableException | ClientAbortException e) {

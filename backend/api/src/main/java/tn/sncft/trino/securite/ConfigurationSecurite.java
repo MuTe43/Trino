@@ -102,6 +102,15 @@ public class ConfigurationSecurite {
                         // segment after it, and relying on "/stream/**" to match the bare path is a
                         // matcher-implementation detail, not something to bet anonymous access on.
                         .requestMatchers(HttpMethod.GET, "/api/v1/stream", "/api/v1/stream/**").permitAll()
+                        // Following a train needs no account (phase 8). A passenger
+                        // checking on their train has no login, so requiring one here
+                        // would deliver the notification use case to nobody who wants
+                        // it. These endpoints are not unprotected for that -- they are
+                        // scoped by the caller's own credential inside the service, and
+                        // POST is rate-limited per IP because it is an unauthenticated
+                        // write that sends mail.
+                        .requestMatchers("/api/v1/abonnements", "/api/v1/abonnements/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/notifications").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         // The position feed authenticates with X-Ingest-Key, checked by
                         // FiltreCleIngestion ahead of this rule. The rule stays so the
@@ -166,6 +175,15 @@ public class ConfigurationSecurite {
                         .hasRole("ADMINISTRATEUR")
                         .requestMatchers(HttpMethod.GET, "/api/v1/journal-connexions", "/api/v1/journal-connexions/**")
                         .hasRole("ADMINISTRATEUR")
+                        // Alert rules: ADMINISTRATEUR only, and this is the half of
+                        // invariant 9 that produces the right status. POST and PATCH
+                        // carry validated bodies, so without a URL rule a forbidden
+                        // caller sending a malformed payload would be answered 400
+                        // VALIDATION_ECHOUEE -- told their payload was wrong on an
+                        // endpoint they were never allowed to touch. @PreAuthorize on
+                        // ServiceRegleAlerte is the other half.
+                        .requestMatchers("/api/v1/regles-alerte", "/api/v1/regles-alerte/**")
+                        .hasRole("ADMINISTRATEUR")
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(pointEntreeAuthentification())
@@ -191,7 +209,10 @@ public class ConfigurationSecurite {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(origines);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        // X-Abonne since phase 8: the browser normally sends the subscriber token
+        // as a cookie, but an API client that cannot hold one uses the header,
+        // and a header not listed here is stripped by the preflight.
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Abonne"));
         configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);

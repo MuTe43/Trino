@@ -19,7 +19,11 @@ Every 4xx/5xx returns exactly this shape, produced by one
 ```
 
 Codes: `VALIDATION_ECHOUEE` `NON_AUTHENTIFIE` `ACCES_REFUSE` `INTROUVABLE`
-`CONFLIT` `CLE_INGESTION_INVALIDE` `ERREUR_INTERNE`
+`CONFLIT` `CLE_INGESTION_INVALIDE` `TROP_DE_REQUETES` `ERREUR_INTERNE`
+
+`TROP_DE_REQUETES` (429, added phase 8) keeps its message, unlike the generic 400
+branch: "réessayez dans une minute" is the only part a caller can act on, and a
+rate limit that does not say when to come back is answered by retrying at once.
 
 ## Auth
 
@@ -237,8 +241,27 @@ GET /stream/gares/{gareId}       text/event-stream
 ```
 
 Public, no auth (the passenger portal and station boards are anonymous).
-Emits deltas only. Event names: `position`, `statut`, `retard`, `incident`.
-Heartbeat comment every 15s to keep proxies from closing the stream.
+Emits deltas only. Event names: `position`, `statut`, `retard`, `incident`,
+`notification`. Heartbeat comment every 15s to keep proxies from closing the
+stream.
+
+**The `abonne:` channel is never named by the client** (phase 8). The
+subscription list is client-supplied, so a parameter for it would let anyone
+stream another passenger's notifications with a token they guessed or stole.
+`StreamController` takes the token from the `X-Abonne` header or the
+`jeton_abonne` cookie and **ignores any `abonnes=` parameter**; a request that
+sends one gets the ligne/gare channels it asked for and nothing else.
+
+A token cookie alone is a valid subscription: `GET /stream` with an empty query
+opens the notification channel only, which is what the bell in the public header
+does on a page with no map and no board. Without one, an empty subscription is
+still `400 VALIDATION_ECHOUEE`.
+
+Frames on that channel are tagged **`abonne:moi`**, never with the real channel
+name. The real name embeds the token, which reaches the browser as an `HttpOnly`
+cookie precisely so page scripts cannot read it — echoing it back on every
+notification would hand it over anyway. A connection carries at most its own such
+channel, so the alias is unambiguous for a client routing on it.
 
 **`/stream` is the one a browser client should use** (added phase 5). One
 connection per client carrying every channel it asked for. A browser allows
@@ -391,6 +414,169 @@ cannot disagree about where an incident is. Both are null for a ligne-wide
 incident, which has no single point; the client lists it rather than inventing
 one.
 
+## Notifications et alertes
+
+Two use cases of the cahier des charges that had no implementation before phase 8:
+*Voyageur — recevoir des notifications* and *Administrateur — gérer les alertes*.
+
+```
+POST   /abonnements            public  {cibleType, cibleId, canaux, email?}
+DELETE /abonnements/{id}       public, scoped by the caller's own identity
+GET    /abonnements/miennes    public, same scoping
+GET    /notifications?page=&taille=   public, same scoping
+GET    /regles-alerte          ADMINISTRATEUR
+POST   /regles-alerte          ADMINISTRATEUR
+PATCH  /regles-alerte/{id}     ADMINISTRATEUR
+```
+
+### Identity: a cookie, not a login
+
+**Following a train requires no account.** A passenger checking whether their
+train is late has no login, and putting one in front of "Suivre ce train" would
+deliver the use case to nobody who wants it.
+
+`POST /abonnements` with no credential mints a token — `SecureRandom`, 32 bytes
+base64url — and returns it as an `HttpOnly`, `SameSite=Lax`, one-year cookie
+named `jeton_abonne`. **It never appears in a response body, a URL path, a query
+string or a log.** It is a bearer credential for one passenger's subscription
+list: whoever holds it can read their notifications and cancel their
+subscriptions. A client that cannot hold a cookie may present its own token in
+`X-Abonne` instead — legitimate, since the value is only ever a key to that same
+caller's rows — and it is validated for shape before it reaches a uniquely
+indexed `varchar(64)`.
+
+**The `SecureRandom` property therefore holds on the cookie path only.** Any
+16–64 character `[A-Za-z0-9_-]` string presented in `X-Abonne` is accepted as an
+identity, so two API clients that both pick `aaaaaaaaaaaaaaaa` share one
+subscription list. That is inherent to supporting the header at all, and it is
+the caller's own exposure, not another subscriber's: a weak token cannot reach
+rows created under a strong one.
+
+`SameSite=Lax` and not `None`: the portal on :3000 and the API on :8080 are a
+different *origin* but the same *site* (SameSite ignores the port), so Lax is
+sent. `None` additionally requires `Secure`, and over plain http on localhost the
+browser would drop the cookie outright — the bell would silently never bind.
+
+All four read/write paths resolve the caller the same way: **authenticated
+principal if there is one, else the token.** One rule in one place, because
+`abonnement` carries exactly one identity (see domain-model) and reading an
+account's subscriptions back by cookie would show their owner an empty list.
+
+**No client in this repo takes the account path.** The portal never sends an
+`Authorization` header on these endpoints, and `EventSource` cannot set one at
+all, so every browser caller resolves as anonymous and every subscription the UI
+creates is a token subscription. The account branch is exercised only by an API
+client that sends a bearer token. It is built and tested, not reachable from the
+current UI — stated so that nobody reads the rule above as describing what the
+bell does.
+
+### Subscriptions
+
+`{cibleType, cibleId, canaux, email?}`. No identity field: whose subscription
+this is comes from the caller's own credential, never from the body.
+
+`EMAIL` requires an address. That is the one cross-field rule in the API and the
+one `details[].champ` that is not a plain field path — it is reported on
+`emailRequisPourCanalEmail`. The form marks its email input `required` whenever
+EMAIL is ticked, so a caller normally meets the rule before sending.
+
+**Re-subscribing is not an error**: an identity that already follows a target
+gets `200` and an updated row, not `409`. "Suivre" is a button on a public page —
+it gets double-clicked, pressed from a second tab, and pressed again by someone
+who now wants email too. A new subscription is `201`.
+
+`DELETE` on a subscription belonging to someone else answers `404`, not `403`:
+with an id in the path and no account behind the request, distinguishing "not
+yours" from "does not exist" would confirm to an enumerating caller which ids are
+real.
+
+`GET /abonnements/miennes` and `GET /notifications` answer with an empty list and
+an empty page for a visitor who has no identity yet — a normal state on a public
+portal, not a failure to authenticate.
+
+```json
+{
+  "id": 3, "cibleType": "COURSE", "cibleId": 1361,
+  "canaux": ["IN_APP", "EMAIL"], "email": "voyageur@exemple.tn",
+  "creeAt": "2026-08-12T13:02:10Z"
+}
+```
+
+`NotificationDTO` exposes neither `destinataire` nor `erreur`: the first is
+either the reader's own address or an internal subscription reference, the second
+is an SMTP diagnostic for whoever runs the system. `envoyeAt` is null while a
+dispatch is in flight, which is why lists order on `id` — monotonic, never null,
+and on an append-only table it is the emission order.
+
+```json
+{
+  "id": 25, "evenement": "RETARD_SEUIL", "courseId": 1361, "canal": "IN_APP",
+  "sujet": "Train TN101 — retard de 25 min",
+  "contenu": "Le train TN101 (Tunis - Sousse - Sfax - Gabès) circule avec 25 minutes de retard.",
+  "statut": "ENVOYE", "envoyeAt": "2026-08-12T13:15:23Z"
+}
+```
+
+### Règles d'alerte
+
+`ADMINISTRATEUR` only, with a URL rule **and** `@PreAuthorize` (invariant 9).
+`POST` and `PATCH` carry validated bodies, so without the URL rule a forbidden
+caller sending a malformed payload would be told 400 on an endpoint they were
+never allowed to touch. The other three roles get 403, including
+`RESPONSABLE_EXPLOITATION`: configuring what the system notifies about is
+administration, not exploitation.
+
+`{evenement, seuilMin?, graviteMin?, canaux, actif}`. `modifiePar` is not a
+field — it is the authenticated administrator, and null for a rule still as V8
+seeded it. `seuilMin` is required for `RETARD_SEUIL` and refused for every other
+event (`409 CONFLIT`, named): a delay rule with no threshold fires on every
+revision of every estimate.
+
+`PATCH` is partial and carries **no `evenement`**: changing which event a rule
+reacts to is a different rule, not an edit, and it would silently re-point every
+notification the console attributes to this one. `seuilMin` sent as null leaves
+the threshold alone rather than clearing it, since a `RETARD_SEUIL` row may not
+have none.
+
+**A rule's `canaux` and a subscription's `canaux` answer different questions** —
+what an event is *allowed* to use, and what a subscriber *wants* — and the engine
+emits on the intersection. Either saying no is a no. The four rules V8 seeds
+carry all four channels, so out of the box the choice belongs entirely to the
+subscriber.
+
+### Channels
+
+| Canal | État | Notes |
+|---|---|---|
+| `IN_APP` | **fonctionnel** | SSE on `abonne:{identité}`, tagged `abonne:moi`. |
+| `EMAIL` | **fonctionnel** | Real SMTP to Mailpit (`localhost:8025`). |
+| `SMS` | stub | `CanalSmsStub` logs a Twilio-shaped payload. No account, and no phone number anywhere in the model. |
+| `AFFICHAGE` | existing | The station board already consumes `gare:{id}`. The adapter records the row as sent and emits nothing. |
+
+Dispatch is asynchronous on its own executor, and one task per notification: a
+subscriber whose EMAIL is stuck against a dead SMTP server must not hold up the
+IN_APP frame that would have reached the bell instantly. Ingestion is unaffected
+either way — measured at 16–36 ms for `POST /ingest/positions` with SMTP pointed
+at a closed port.
+
+**A channel that fails leaves an `ECHEC` row with `erreur` populated.** That
+covers the adapter-throws path, and only that path. A row whose dispatch never
+runs to completion — the process is killed, or the executor's bounded queue
+overflows and the task is discarded — stays `EN_ATTENTE` with `envoye_at` and
+`erreur` both null, for ever: nothing retries, and nothing sweeps for stale rows
+at startup. `GET /notifications` shows it to the passenger in that state.
+Measured: 344 rows left `EN_ATTENTE` by a `taskkill /F` of the API mid-flight,
+and none at all across a clean run. Recorded rather than fixed — a retry or a
+startup sweep is phase 9 work.
+
+Notifications are deduplicated: one per `(abonnement, evenement, course)` per **30
+simulated minutes**, on `HorlogeCirculation` rather than the wall clock. At the
+x20 replay the simulator runs, 30 simulated minutes is 90 real seconds; judged on
+the wall clock the guard would let through twenty times too many. Incidents are
+exempt — an incident is declared once and resolved once, so there is nothing to
+suppress, and suppressing anyway would mean a second incident on the same ligne
+within half an hour reached nobody.
+
 ## Tableau de bord et rapports
 
 ```
@@ -454,4 +640,19 @@ still downloads and the server logs three ERROR stack traces per export.
 ## Rate limits
 
 `/auth/login` 10 per minute per IP. `/ingest/*` 120 per minute per key.
-Simple in-memory bucket, no library.
+`POST /abonnements` 10 per minute per IP. Simple in-memory bucket, no library.
+
+Only the third is built. `LimiteurDebit` (phase 8) is a fixed-window counter
+registered as a `HandlerInterceptor` on `POST /api/v1/abonnements` — an
+interceptor rather than the controller, because a controller holds no logic
+(invariant 7), and rather than the service, because a service has no business
+knowing a caller's IP.
+
+It was built for `/abonnements` first because that is the only unauthenticated
+endpoint that **sends mail**: without a limit, one loop posts a thousand messages
+to any address the caller names. The two older limits above remain declared and
+unimplemented; wiring them is now one line each in `ConfigurationWeb`.
+
+Fixed window rather than sliding or a token bucket: the difference between 10 per
+minute and up to 20 across a window boundary does not change whether the endpoint
+can be abused, and the simpler structure has no timer and no eviction thread.

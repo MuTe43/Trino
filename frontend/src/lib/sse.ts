@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CANAL_ABONNE } from "./abonnement";
 import { API_BASE_URL } from "./api";
 import type {
   EvenementIncident,
+  EvenementNotification,
   EvenementPosition,
   EvenementRetard,
   EvenementStatut,
@@ -36,6 +38,8 @@ export interface GestionnairesFluxSse {
   onStatut?: (evenement: EvenementStatut) => void;
   onRetard?: (evenement: EvenementRetard) => void;
   onIncident?: (evenement: EvenementIncident) => void;
+  /** Only ever delivered on `CANAL_ABONNE` — this tab's own notifications. */
+  onNotification?: (evenement: EvenementNotification) => void;
   /** Called whenever the connection state changes, e.g. to drive a small dot. */
   onEtat?: (etat: EtatFluxSse) => void;
 }
@@ -53,16 +57,30 @@ const DELAI_MAX_MS = 30_000;
  */
 const DELAI_REGROUPEMENT_MS = 50;
 
-/** `ligne:3` and `gare:1` -> `?lignes=3&gares=1`. */
+/**
+ * `ligne:3` and `gare:1` -> `?lignes=3&gares=1`.
+ *
+ * `abonne:moi` contributes **no parameter at all**, and that is the point. The
+ * server derives that channel from the caller's own cookie and ignores anything
+ * the client says about it, so a subscription list naming another subscriber's
+ * token cannot exist. It still counts as a channel here: a page whose only live
+ * consumer is the notification bell opens `/stream` with an empty query, and the
+ * server accepts it precisely because the cookie supplies one.
+ */
 function construireUrl(canaux: Iterable<string>): string | null {
   const lignes: string[] = [];
   const gares: string[] = [];
+  let abonne = false;
   for (const canal of canaux) {
+    if (canal === CANAL_ABONNE) {
+      abonne = true;
+      continue;
+    }
     const [type, id] = canal.split(":");
     if (type === "ligne" && id) lignes.push(id);
     else if (type === "gare" && id) gares.push(id);
   }
-  if (lignes.length === 0 && gares.length === 0) {
+  if (lignes.length === 0 && gares.length === 0 && !abonne) {
     return null;
   }
   const parametres = new URLSearchParams();
@@ -71,7 +89,8 @@ function construireUrl(canaux: Iterable<string>): string | null {
   // look like a change and trigger a needless reconnect.
   if (lignes.length > 0) parametres.set("lignes", lignes.sort().join(","));
   if (gares.length > 0) parametres.set("gares", gares.sort().join(","));
-  return `${API_BASE_URL}/api/v1/stream?${parametres.toString()}`;
+  const requete = parametres.toString();
+  return `${API_BASE_URL}/api/v1/stream${requete ? `?${requete}` : ""}`;
 }
 
 /**
@@ -87,7 +106,7 @@ interface EnveloppeSse<T> {
   donnees: T;
 }
 
-type NomEvenement = "position" | "statut" | "retard" | "incident";
+type NomEvenement = "position" | "statut" | "retard" | "incident" | "notification";
 
 /**
  * One connection for the whole tab, and the book-keeping to decide what it
@@ -247,7 +266,13 @@ class ConnexionPartagee {
     }
     this.signalerEtat("connexion");
 
-    const nouvelleSource = new EventSource(url, { withCredentials: false });
+    // withCredentials: the subscriber cookie is what binds this connection's
+    // `abonne:` channel, and an EventSource cannot set a header to carry it
+    // instead. Harmless for a page with no cookie -- it simply sends none, and
+    // the server opens the ligne/gare channels alone. The API already answers
+    // with an explicit origin and Access-Control-Allow-Credentials, which this
+    // requires (a wildcard origin would be refused, and is rejected at startup).
+    const nouvelleSource = new EventSource(url, { withCredentials: true });
     this.source = nouvelleSource;
 
     nouvelleSource.onopen = () => {
@@ -273,6 +298,7 @@ class ConnexionPartagee {
     this.ecouter(nouvelleSource, "statut");
     this.ecouter(nouvelleSource, "retard");
     this.ecouter(nouvelleSource, "incident");
+    this.ecouter(nouvelleSource, "notification");
 
     this.installerEcouteVisibilite();
   }
@@ -330,6 +356,9 @@ class ConnexionPartagee {
         return;
       case "incident":
         gestionnaires.onIncident?.(donnees as EvenementIncident);
+        return;
+      case "notification":
+        gestionnaires.onNotification?.(donnees as EvenementNotification);
     }
   }
 
@@ -381,6 +410,7 @@ export function useFluxSse(canal: string | null, gestionnaires: GestionnairesFlu
     boite.onStatut = gestionnaires.onStatut;
     boite.onRetard = gestionnaires.onRetard;
     boite.onIncident = gestionnaires.onIncident;
+    boite.onNotification = gestionnaires.onNotification;
     boite.onEtat = gestionnaires.onEtat;
   });
 

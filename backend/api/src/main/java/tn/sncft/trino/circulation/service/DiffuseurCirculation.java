@@ -1,5 +1,6 @@
 package tn.sncft.trino.circulation.service;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import tn.sncft.trino.circulation.domaine.ClasseRetard;
 import tn.sncft.trino.circulation.domaine.Course;
@@ -21,14 +22,27 @@ import java.util.List;
  * {@link HubSse} so the hub stays a transport and knows nothing about courses,
  * and so the two callers that publish -- ingestion and
  * {@link DetecteurSilence} -- work out their channels the same way.
+ *
+ * <p>Since phase 8 the same three payloads are also handed to the Spring
+ * application context, where {@code MoteurNotification} listens for them after
+ * the transaction commits. Deliberately the same records, not a parallel set of
+ * notification-shaped events: two event streams describing one movement drift,
+ * and the one that drifts is always the one with fewer consumers watching it.
+ *
+ * <p>The direction matters as much as the reuse. Publishing means circulation
+ * has no compile-time knowledge that notifications exist, so the module boundary
+ * of decision 1 holds in both directions and the delay engine keeps working
+ * unchanged if the notification module is removed.
  */
 @Component
 public class DiffuseurCirculation {
 
     private final HubSse hubSse;
+    private final ApplicationEventPublisher publicateurEvenements;
 
-    public DiffuseurCirculation(HubSse hubSse) {
+    public DiffuseurCirculation(HubSse hubSse, ApplicationEventPublisher publicateurEvenements) {
         this.hubSse = hubSse;
+        this.publicateurEvenements = publicateurEvenements;
     }
 
     public void position(Course course, List<PassageGare> passages, FixPosition fix, OffsetDateTime eta) {
@@ -42,12 +56,14 @@ public class DiffuseurCirculation {
     }
 
     public void statut(Course course, List<PassageGare> passages, StatutCourse statut) {
-        publier(canaux(course, passages), "statut", new EvenementStatut(
+        EvenementStatut evenement = new EvenementStatut(
                 course.getId(),
                 statut,
                 course.getRetardMin(),
                 ClasseRetard.de(course.getRetardMin()),
-                course.getCauseRetard()));
+                course.getCauseRetard());
+        publier(canaux(course, passages), "statut", evenement);
+        publicateurEvenements.publishEvent(evenement);
     }
 
     /** No-op when nothing moved: an empty delta is not worth a frame. */
@@ -69,13 +85,20 @@ public class DiffuseurCirculation {
             return;
         }
 
-        publier(canaux(course, passages), "retard", new EvenementRetard(
+        EvenementRetard evenement = new EvenementRetard(
                 course.getId(),
                 course.getRetardMin(),
                 ClasseRetard.de(course.getRetardMin()),
                 course.getCauseRetard(),
-                details));
+                details);
+        publier(canaux(course, passages), "retard", evenement);
+        publicateurEvenements.publishEvent(evenement);
     }
+
+    // `position` is deliberately NOT published to the application context. No
+    // alert rule reacts to a fix, and a course reports one every few seconds --
+    // it would be the highest-volume event in the system, dispatched to a
+    // listener that would immediately discard all of it.
 
     /**
      * Both callers publish from inside a transaction, so the send is deferred to

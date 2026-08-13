@@ -157,3 +157,47 @@ lasting out its 30 minutes. That costs one lookup per request and has since
 phase 1; it is worth writing down because the cheaper design — trusting the
 token's claims until it expires — is the one a reader assumes, and it would make
 "désactiver" a promise the console could not keep for half an hour.
+
+## 12. A cookie is the whole identity of a passenger who follows a train
+
+Requiring an account to press "Suivre ce train" would deliver *recevoir des
+notifications* to nobody who actually wants it. A passenger checking whether
+their train is late has no login and will not make one for a single journey. So
+anonymous subscription is the default path, not a fallback: the server mints a
+`SecureRandom` token on the first `POST /abonnements` and returns it as an
+`HttpOnly` cookie. That is the entire identity.
+
+**It is a bearer credential, and treated as one.** Whoever holds it can read that
+passenger's notifications and cancel their subscriptions. It therefore never
+appears in a response body, a URL path, a query string or a log line — and the
+`abonne:` SSE channel is derived server-side from it rather than named by the
+client, because the subscription list on `/stream` is client-supplied and a
+parameter for that channel would let anyone stream anybody's notifications. For
+the same reason the frame is tagged with the alias `abonne:moi`: the real channel
+name embeds the token, and echoing it back on every notification would undo the
+`HttpOnly` cookie it arrived in.
+
+`SameSite=Lax`, not `None`. The portal on :3000 and the API on :8080 are a
+different origin but the same *site* — SameSite ignores the port — so Lax is sent
+on these requests. `None` would additionally require `Secure`, which over plain
+http on localhost means the browser drops the cookie and the bell silently never
+binds. This is worth recording because the symptom of getting it wrong is nothing
+at all.
+
+**The two identities never merge.** A row carries exactly one of `utilisateur_id`
+and `jeton_anonyme`, so a visitor who subscribes anonymously and later signs in
+does not inherit those subscriptions. Claiming them would mean a login-time
+migration and a rule for what happens when both identities already follow the
+same train; neither is worth building inside this timeline, and the alternative —
+allowing both on one row — is worse, because a signed-in browser still carries
+the anonymous cookie and the same person would be notified twice for one event.
+Stated rather than hidden.
+
+**Deduplication is measured in simulated minutes.** One notification per
+`(abonnement, evenement, course)` per 30 minutes of `HorlogeCirculation`, not of
+wall-clock time. At the x20 replay the demo runs on, 30 simulated minutes is 90
+real seconds; a wall-clock window would let through twenty times too many, which
+during a soutenance is a subscriber receiving hundreds of messages in a minute.
+At acceleration 1 the two clocks are identical, so nothing about real hardware
+changes. The state is in memory, like `EtatCirculationStore` and for the same
+reason: a restart costs at most one duplicate.

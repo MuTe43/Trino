@@ -68,8 +68,10 @@ run time, never edit the phase file or `application.yml`.
    HTTP and POSTs positions to `/api/v1/ingest/positions`. It is a stand-in for
    real GPS hardware and must stay swappable.
 4. Flyway migrations already applied are immutable. New change = new `V{n}__` file.
-5. SSE payloads are deltas, never full snapshots. Channels are scoped per ligne
-   or per gare, never global.
+5. SSE payloads are deltas, never full snapshots. Channels are scoped per
+   ligne, per gare, or per abonné — never global. A client receives only the
+   channels it named, and may name an `abonne:` channel only for its own token
+   (amended phase 8; the third kind is narrower than the other two, not wider).
 6. All money-free, all times stored as `timestamptz` in UTC, rendered in
    `Africa/Tunis`.
 7. Controllers hold no logic. Controller -> Service -> Repository. DTOs are Java

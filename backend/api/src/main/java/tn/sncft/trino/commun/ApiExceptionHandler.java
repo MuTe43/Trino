@@ -105,6 +105,17 @@ public class ApiExceptionHandler {
                 "Méthode HTTP non supportée pour cette ressource.", List.of());
     }
 
+    /**
+     * Over a rate limit. {@code 429} with the message kept, unlike the generic
+     * 400 branch: "réessayez dans une minute" is the only part a caller can act
+     * on, and a rate limit that does not say when to come back is answered by
+     * retrying at once.
+     */
+    @ExceptionHandler(TropDeRequetesException.class)
+    public ResponseEntity<ErreurDTO> gererTropDeRequetes(TropDeRequetesException ex) {
+        return reponse(HttpStatus.TOO_MANY_REQUESTS, "TROP_DE_REQUETES", ex.getMessage(), List.of());
+    }
+
     /** A transition the domain refuses, caught before the database sees it. */
     @ExceptionHandler(ConflitException.class)
     public ResponseEntity<ErreurDTO> gererConflitMetier(ConflitException ex) {

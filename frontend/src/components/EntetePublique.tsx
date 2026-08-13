@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BarreRecherche } from "./BarreRecherche";
+import { ClocheNotifications } from "./ClocheNotifications";
 
 /**
  * The public portal's only chrome: a slim bar over the full-bleed map (and,
@@ -7,7 +8,11 @@ import { BarreRecherche } from "./BarreRecherche";
  * `app/(public)/layout.tsx`). Hairline bottom border, no shadow, the SNCFT
  * wordmark set as type in `--sncft-bleu` (never a raster logo), the existing
  * search, and a discreet link into the exploitation console. Nothing else --
- * no menu, no hamburger. `/affichage/{gareId}` is a kiosk and stays entirely
+ * no menu, no hamburger.
+ *
+ * The notification bell (phase 8) renders nothing until this visitor follows
+ * something, so the bar stays exactly as thin as it was for everyone who has
+ * not. `/affichage/{gareId}` is a kiosk and stays entirely
  * outside this layout (`app/affichage/layout.tsx` is its own chrome-free
  * shell); `/exploitation/*` has its own gated shell too.
  */
@@ -24,6 +29,8 @@ export function EntetePublique() {
       <div className="min-w-0 flex-1">
         <BarreRecherche className="w-full max-w-md" />
       </div>
+
+      <ClocheNotifications />
 
       <Link
         href="/connexion"

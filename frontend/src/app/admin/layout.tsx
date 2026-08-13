@@ -23,6 +23,7 @@ const ONGLETS = [
   { href: "/admin/lignes", libelle: "Lignes", exact: false },
   { href: "/admin/trains", libelle: "Trains", exact: false },
   { href: "/admin/utilisateurs", libelle: "Utilisateurs", exact: false },
+  { href: "/admin/alertes", libelle: "Alertes", exact: false },
   { href: "/admin/journal", libelle: "Journal", exact: false },
 ] as const;
 

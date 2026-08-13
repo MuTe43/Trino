@@ -46,6 +46,21 @@ final class AbonnementSse {
      * per-ligne and per-gare endpoints.
      */
     Object charge(Collection<String> canauxConcernes, Object donnees) {
-        return enveloppe ? new EnveloppeSse(List.copyOf(canauxConcernes), donnees) : donnees;
+        if (!enveloppe) {
+            return donnees;
+        }
+        return new EnveloppeSse(canauxConcernes.stream().map(AbonnementSse::masquer).toList(), donnees);
+    }
+
+    /**
+     * An {@code abonne:} channel is tagged with the alias, never with its real
+     * name. The real name embeds the subscriber's bearer token, which reaches
+     * the browser as an {@code HttpOnly} cookie precisely so that scripts on the
+     * page cannot read it; echoing it back in every notification frame would
+     * hand it over anyway. A connection carries at most its own such channel, so
+     * the alias is unambiguous for the client routing on it.
+     */
+    private static String masquer(String canal) {
+        return canal.startsWith(HubSse.PREFIXE_ABONNE) ? HubSse.CANAL_ABONNE_ALIAS : canal;
     }
 }

@@ -1,5 +1,7 @@
 import { requeteAuthJson } from "./auth";
 import type {
+  CorpsModificationRegleAlerte,
+  CorpsRegleAlerte,
   CorpsUtilisateurCreation,
   CorpsUtilisateurModification,
   DesserteDTO,
@@ -7,6 +9,7 @@ import type {
   JournalConnexion,
   LigneDTO,
   PageDTO,
+  RegleAlerteDTO,
   Train,
   TypeTrain,
   Utilisateur,
@@ -205,4 +208,35 @@ export interface FiltresJournal {
 
 export function listerJournal(filtres: FiltresJournal = {}): Promise<PageDTO<JournalConnexion>> {
   return requeteAuthJson<PageDTO<JournalConnexion>>(`/journal-connexions${requete({ ...filtres })}`);
+}
+
+// --- Règles d'alerte (phase 8) ---------------------------------------------
+
+/**
+ * `GET /regles-alerte` — unpaginated. Four rules ship with the migration and an
+ * administrator adding a fifth is a rare event; a page envelope around a list
+ * that fits on one screen is ceremony.
+ */
+export function listerReglesAlerte(): Promise<RegleAlerteDTO[]> {
+  return requeteAuthJson<RegleAlerteDTO[]>("/regles-alerte");
+}
+
+/** `POST /regles-alerte`. `seuilMin` is required for RETARD_SEUIL and refused
+ * (409 CONFLIT) for every other event — the rule would never fire. */
+export function creerRegleAlerte(corps: CorpsRegleAlerte): Promise<RegleAlerteDTO> {
+  return requeteAuthJson<RegleAlerteDTO>("/regles-alerte", corpsJson("POST", corps));
+}
+
+/**
+ * `PATCH /regles-alerte/{id}` — partial, an absent field is unchanged.
+ *
+ * `evenement` cannot be sent: changing which event a rule reacts to is a
+ * different rule, not an edit, and it would silently re-point every
+ * notification already attributed to this one.
+ */
+export function modifierRegleAlerte(
+  id: number,
+  corps: CorpsModificationRegleAlerte,
+): Promise<RegleAlerteDTO> {
+  return requeteAuthJson<RegleAlerteDTO>(`/regles-alerte/${id}`, corpsJson("PATCH", corps));
 }

@@ -33,6 +33,7 @@ export interface ErreurApi {
     | "INTROUVABLE"
     | "CONFLIT"
     | "CLE_INGESTION_INVALIDE"
+    | "TROP_DE_REQUETES"
     | "ERREUR_INTERNE";
   message: string;
   details?: { champ: string; probleme: string }[];
@@ -544,4 +545,133 @@ export interface JournalConnexion {
   userAgent: string | null;
   succes: boolean;
   horodatage: string;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications et alertes (phase 8)
+// Mirrors backend/api/.../notification/dto and .../notification/domaine.
+//
+// Nothing here carries the subscriber's token. It reaches the browser as an
+// HttpOnly cookie set by POST /abonnements and is never readable from
+// JavaScript, never sent in a URL, and never present in a response body — it is
+// a bearer credential for one passenger's subscription list, not an id.
+// ---------------------------------------------------------------------------
+
+/** How a notification is delivered. Mirrors notification/domaine/CanalType. */
+export type CanalType = "IN_APP" | "EMAIL" | "SMS" | "AFFICHAGE";
+
+/** What a subscription follows. Mirrors notification/domaine/CibleType. */
+export type CibleType = "COURSE" | "LIGNE" | "GARE";
+
+/** What an alert rule reacts to. Mirrors notification/domaine/Evenement. */
+export type EvenementAlerte =
+  | "RETARD_SEUIL"
+  | "COURSE_ANNULEE"
+  | "INCIDENT_DECLARE"
+  | "INCIDENT_RESOLU";
+
+/** Mirrors notification/domaine/StatutNotification. `EN_ATTENTE` means the
+ * dispatch is still in flight, `ECHEC` that a working channel could not
+ * deliver — the reason is kept server-side, not shown to a passenger. */
+export type StatutNotification = "EN_ATTENTE" | "ENVOYE" | "ECHEC";
+
+/** One subscription, as its owner sees it. Mirrors notification/dto/AbonnementDTO. */
+export interface AbonnementDTO {
+  id: number;
+  cibleType: CibleType;
+  cibleId: number;
+  canaux: CanalType[];
+  email: string | null;
+  creeAt: string;
+}
+
+/**
+ * Body of `POST /abonnements`. No identity field: whose subscription this is
+ * comes from the caller's own cookie, server-side.
+ *
+ * `email` is required whenever `canaux` contains `EMAIL`; the server reports the
+ * violation on `emailRequisPourCanalEmail`, which is the one `details[].champ`
+ * in the API that is not a plain field name.
+ */
+export interface CorpsAbonnement {
+  cibleType: CibleType;
+  cibleId: number;
+  canaux: CanalType[];
+  email?: string;
+}
+
+/**
+ * One emitted notification. Mirrors notification/dto/NotificationDTO.
+ *
+ * `envoyeAt` is null while the dispatch is in flight, which is why lists here
+ * order on `id` — monotonic, never null, and on an append-only table it is the
+ * emission order.
+ */
+export interface NotificationDTO {
+  id: number;
+  evenement: EvenementAlerte;
+  courseId: number | null;
+  canal: CanalType;
+  sujet: string;
+  contenu: string;
+  statut: StatutNotification;
+  envoyeAt: string | null;
+}
+
+/**
+ * `event: notification`, on the caller's own `abonne:` channel. Mirrors
+ * notification/evenement/EvenementNotification.
+ *
+ * The frame is tagged with the alias `abonne:moi`, never with the real channel
+ * name — that name embeds the token, and echoing it back would hand a scripts-
+ * on-the-page-readable copy of the HttpOnly cookie to anything listening.
+ */
+export interface EvenementNotification {
+  notificationId: number;
+  evenement: EvenementAlerte;
+  sujet: string;
+  contenu: string;
+  courseId: number | null;
+  emisAt: string | null;
+}
+
+/**
+ * One alert rule. Mirrors notification/dto/RegleAlerteDTO.
+ *
+ * `seuilMin` is set for `RETARD_SEUIL` and null for every other event;
+ * `graviteMin` is null for "every severity". `modifiePar` is null for a rule
+ * still as the migration seeded it — nobody has decided anything about it yet.
+ */
+export interface RegleAlerteDTO {
+  id: number;
+  evenement: EvenementAlerte;
+  seuilMin: number | null;
+  graviteMin: Gravite | null;
+  canaux: CanalType[];
+  actif: boolean;
+  modifiePar: number | null;
+  modifieParNom: string | null;
+}
+
+/** Body of `POST /regles-alerte`. */
+export interface CorpsRegleAlerte {
+  evenement: EvenementAlerte;
+  seuilMin: number | null;
+  graviteMin: Gravite | null;
+  canaux: CanalType[];
+  actif: boolean;
+}
+
+/** Body of `PATCH /regles-alerte/{id}`. Absent field means unchanged, and
+ * `evenement` is absent on purpose: changing which event a rule reacts to is a
+ * different rule, not an edit. */
+export interface CorpsModificationRegleAlerte {
+  seuilMin?: number | null;
+  graviteMin?: Gravite | null;
+  /** "Toutes les gravités". An absent field means unchanged, so a null
+   * `graviteMin` cannot express "clear it" — the two are the same JSON. Send
+   * this instead; without it the server keeps the old severity and answers 200. */
+  effacerGraviteMin?: boolean;
+  canaux?: CanalType[];
+  actif?: boolean;
 }

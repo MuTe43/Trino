@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ApiError, listerPassages, trouverCourse } from "@/lib/api";
+import { BoutonSuivre } from "@/components/BoutonSuivre";
 import { DetailCourseTempsReel } from "@/components/DetailCourseTempsReel";
 
 // Live data (SSE) means this page must never be statically cached.
@@ -36,6 +37,13 @@ export default async function TrainPage({ params }: PageProps) {
 
       <div className="mt-4">
         <DetailCourseTempsReel courseInitiale={course} passagesInitiaux={passages} />
+      </div>
+
+      {/* Under the stop list, not above it: someone opening this page wants to
+          know where their train is first, and is only interested in being told
+          about it later once they have seen that it is late. */}
+      <div className="mt-6 border-t border-filet pt-4">
+        <BoutonSuivre cibleType="COURSE" cibleId={courseId} libelleCible="ce train" />
       </div>
     </main>
   );

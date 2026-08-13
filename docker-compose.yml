@@ -16,5 +16,26 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 8: the EMAIL notification channel sends here. Mailpit is an SMTP sink
+  # with a web inbox -- it accepts every message and delivers none, which is
+  # exactly what a demo needs. 1025 is SMTP, 8025 is the inbox to open on screen.
+  #
+  # No volume: the inbox is meant to be thrown away between runs, and a
+  # persisted one would show yesterday's demo alongside today's.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: trino-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   trino-db-data:

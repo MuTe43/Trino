@@ -1,5 +1,6 @@
 package tn.sncft.trino.diffusion.web;
 
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -8,9 +9,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import tn.sncft.trino.diffusion.HubSse;
+import tn.sncft.trino.securite.IdentiteAbonne;
+import tn.sncft.trino.securite.ResolveurIdentiteAbonne;
 
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -33,9 +37,11 @@ public class StreamController {
     private static final int MAX_CANAUX = 64;
 
     private final HubSse hubSse;
+    private final ResolveurIdentiteAbonne resolveurIdentiteAbonne;
 
-    public StreamController(HubSse hubSse) {
+    public StreamController(HubSse hubSse, ResolveurIdentiteAbonne resolveurIdentiteAbonne) {
         this.hubSse = hubSse;
+        this.resolveurIdentiteAbonne = resolveurIdentiteAbonne;
     }
 
     /**
@@ -50,10 +56,20 @@ public class StreamController {
      * <p>Still invariant 5: the subscription list is explicit, so a client
      * receives only the channels it named. There is no way to ask for
      * everything.
+     *
+     * <p>The one channel a client does <em>not</em> name is its own
+     * {@code abonne:} channel (phase 8). It is derived here from the caller's
+     * own credential -- the {@code X-Abonne} header or the {@code jeton_abonne}
+     * cookie -- and there is deliberately no {@code abonnes=} parameter: the
+     * subscription list is client-supplied, so a parameter naming this channel
+     * would let anyone stream another passenger's notifications by guessing or
+     * stealing one token. Any {@code abonnes=} sent by a client is simply not
+     * read.
      */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter multiplex(@RequestParam(name = "lignes", required = false) List<Long> lignes,
-                                @RequestParam(name = "gares", required = false) List<Long> gares) {
+                                @RequestParam(name = "gares", required = false) List<Long> gares,
+                                HttpServletRequest requete) {
         // LinkedHashSet: de-duplicates a repeated id and keeps the caller's
         // order, which only matters for readable log lines.
         Set<String> canaux = new LinkedHashSet<>();
@@ -63,6 +79,7 @@ public class StreamController {
         if (gares != null) {
             gares.forEach(id -> canaux.add(HubSse.canalGare(id)));
         }
+        canalAbonne(requete).ifPresent(canaux::add);
         // IllegalArgumentException is what ApiExceptionHandler turns into a 400
         // VALIDATION_ECHOUEE envelope. An empty subscription would otherwise
         // open a connection that can never receive anything -- exactly the
@@ -84,5 +101,19 @@ public class StreamController {
     @GetMapping(value = "/gares/{gareId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter gare(@PathVariable Long gareId) {
         return hubSse.abonner(HubSse.canalGare(gareId));
+    }
+
+    /**
+     * This connection's private notification channel, or empty for a visitor who
+     * has never subscribed to anything.
+     *
+     * <p>Only on the multiplexed endpoint. The two per-path ones stay the bare,
+     * single-channel shape the kiosk board relies on.
+     */
+    private Optional<String> canalAbonne(HttpServletRequest requete) {
+        return resolveurIdentiteAbonne.resoudre(requete)
+                .map(identite -> identite.estAnonyme()
+                        ? HubSse.canalAbonneJeton(identite.jeton())
+                        : HubSse.canalAbonneCompte(identite.utilisateurId()));
     }
 }

@@ -6,7 +6,7 @@ narrative goes to `docs/RAPPORT-NOTES.md`, not here.
 
 ## Current phase
 
-Phase 7 done, reviewed and verified. Phase 8 next.
+Phase 8 done, reviewed and verified. Phase 9 next.
 
 ## Done
 
@@ -20,119 +20,117 @@ Phase 7 done, reviewed and verified. Phase 8 next.
 - **Phase 5** — dashboards, exports, SSE multiplexing, backfill.
 - **Phase 6** — incidents, exploitation console, public header.
 - **Phase 7** — the administrator console, `/admin/{,gares,lignes,trains,utilisateurs,journal}`.
-  - `ADMINISTRATEUR` had four use cases and no screen since phase 0; it has one now.
-  - **The server generates passwords**, returned once, never readable again. The
-    field is `motDePasseInitial`, not *temporaire* — there is no forced-change
-    flow, so *temporaire* would be a promise the system does not keep. Decision 10.
-  - **Self-lockout refused both ways** (409), compared against the authenticated
-    principal's email, never a hardcoded id. Decision 11.
-  - `GET /journal-connexions`, filling since phase 1 and unreadable until now.
-  - Référentiel filters `?region=&q=` / `?type=&ligneId=`, deferred since phase 0.
-  - All optional filters are **JPA Specifications**, never `:param is null` — that
-    pattern is the `could not determine data type of parameter $7` 500 of phase 6.
-  - `DELETE` of a referenced row → 409, the delete **flushed inside the try** or
-    the FK violation escapes to commit and is mislabelled a uniqueness conflict.
-  - One `TableauEditable` + one `DialogueEdition` serve all four resources.
+- **Phase 8** — notifications et alertes; two use cases that had no implementation.
+  - **Following a train needs no account.** The server mints a `SecureRandom`
+    token on the first `POST /abonnements` and returns it as an `HttpOnly`
+    cookie — never in a body, a URL or a log. Decision 12.
+  - **The client never names its `abonne:` channel.** `StreamController` derives
+    it from the cookie/header and ignores any `abonnes=`; frames carry the alias
+    `abonne:moi`, since the real name embeds the token.
+  - `MoteurNotification` listens to the **same** `Evenement*` records the two
+    diffuseurs already publish. No second event stream; circulation still has no
+    compile-time knowledge that notifications exist.
+  - Every foreign read goes through a **service**. No foreign repository is
+    injected anywhere under `notification/` (decision 1).
+  - **Mailpit** in docker-compose: real SMTP, real inbox at `localhost:8025`.
+  - `/admin/alertes`, on the phase-7 `TableauEditable` + `DialogueEdition` pair
+    (which gained a `multi` field type).
+  - `LimiteurDebit` — the project's first working rate limit, on the one
+    unauthenticated endpoint that sends mail.
 
 ## Migrations applied
 
 `V1__referentiel` · `V2__seed_reseau` · `V3__iam` · `V4__circulation` ·
-`V5__index_circulation` · `V6__backfill_quai_passage_gare` · `V7__incidents`.
+`V5__index_circulation` · `V6__backfill_quai_passage_gare` · `V7__incidents` ·
+`V8__notifications`.
 
-**No migration in phase 7**, as the phase file requires.
+V8 carries the two `journal_connexion` indexes phase 7 was forbidden a migration
+for, and seeds **four `regle_alerte` rows** — the acceptance expects a
+notification before it ever creates a rule.
 
 ## Fixed after review
 
-The review found ten items; seven were fixed, three recorded below.
+The review found eight items; four were fixed in code, three corrected in the
+docs, one recorded below.
 
-- **A mixed-case email could never log in.** `creer` stored the address
-  lowercased, `login` looked it up as typed — so an account created as
-  `Prenom.Nom@SNCFT.tn` was unreachable with the address the admin handed over,
-  and every attempt was journalled with a null `utilisateurId`: an audit trail
-  claiming the email matched no account while the account existed. Invisible to a
-  green build because all four seeded accounts are already lowercase, and it sits
-  exactly on the phase's own browser walkthrough. `normaliserEmail` is now shared
-  by both paths; `UtilisateurServiceTest.loginNormaliseLEmailCommeCreer` pins it.
-  Measured after the fix: login with the typed casing **401 → 200**, journal
-  `utilisateurId` **null → 11**.
-- **A blank coordinate became (0, 0).** The gare form coerced with `?? 0`, and
-  `latitude` is `@NotNull` with no range check, so `0` was *accepted* — measured
-  201. The public map fits its initial bounds over every gare, so one station in
-  the Gulf of Guinea zooms the passenger map out to ocean. The form now sends
-  `null`: measured 400 with the error on `latitude`/`longitude`, which the dialog
-  renders on those inputs. `required` is on the inputs too — the asterisk alone
-  was decoration.
-- **`?? 0` / `?? ""` silently rewrote nullable columns.** All 39 seeded gares
-  carry a null `responsable`; any unrelated rename wrote `""` over it, and
-  clearing a count wrote 0 rather than null. Gares and lignes now match the
-  trains screen, which had it right — the inconsistency was inside one phase.
-- **The docs overstated deactivation.** `api-contract.md`, `decisions.md` and one
-  Javadoc all claimed an issued access token stayed valid for its remaining 30
-  minutes. `FiltreJwt` re-reads the account every request and leaves the context
-  anonymous when inactive, so it is immediate. The behaviour was right and the
-  documentation wrong, which is the direction that gets built upon.
-- Fake-bold `<strong>` (only weights 400/500 are loaded); missing tabular
-  numerals on the journal's two numeric columns, where the overview's copy of the
-  same table had them; and the edit dialog offering your own account roles the
-  server refuses with 409 — it now offers `ADMINISTRATEUR` only.
+- **Editing an open incident notified everybody a second time.**
+  `IncidentService.mettreAJour` republishes the same payload on any change, and a
+  description-only edit leaves `statut` at `OUVERT` — which the engine read as a
+  second declaration. Measured live: a description PATCH took **4 notifications
+  to 8** and sent a second identical email. The cause was the deduplication key:
+  incidents were keyed on the *course*, and a ligne-wide incident carries a null
+  course, so every such incident shared one window while an edit of one still got
+  through. Now keyed on the **incident**. Measured after: **4 → 4**. Two
+  regression tests pin it.
+- **`graviteMin` could not be cleared, and the console offered a control saying
+  it could.** An absent field means unchanged, so a null and an omission are the
+  same JSON; choosing "Toutes" returned 200 with the old severity intact. An
+  explicit `effacerGraviteMin` flag now carries the intent. Measured: `MOYENNE` →
+  `MOYENNE` without it, `MOYENNE` → `null` with it.
+- **The subscriber token could reach a log line.** Every log in `HubSse` names
+  the channel it was working on, and an `abonne:` name embeds the credential —
+  inert at the configured level, but the opposite of what the phase file,
+  decision 12 and `JetonAbonne`'s own javadoc promise. Masked at the log
+  boundary.
+- `ResultatAbonnement` moved to `dto/` (invariant 7 — it crosses the controller
+  boundary); the rules list now sorts by enum ordinal rather than by the stored
+  varchar, which was alphabetical and disagreed with the console's own labels.
 
 ## Verified
 
-`./mvnw test` **171 green, 0 failures, 0 errors, 0 skipped** (145 after phase 6;
-+25 for phase 7's four new classes, +1 regression test). `npm run build`,
-`tsc --noEmit`, `eslint` green. No CRLF; no new dependency either side.
+`./mvnw test` **217 green, 0 failures, 0 errors, 0 skipped** (171 after phase 7).
+`npm run build`, `tsc --noEmit`, `eslint --max-warnings=0` green.
 
 **Run it as `TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino ./mvnw test`.**
 
-Every command of the Acceptance section run live against 8081, twice — before
-the review fixes and again after. **All pass**, with the two standing
-substitutions (8080→8081, `jq`→`node`); the phase file is unedited.
+Every Acceptance command run live against 8081 with the standing substitutions
+(8080→8081, `jq`→`node`, `psql`→`docker exec`). The phase file is unedited.
 
 | Check | Expected | Got |
 |---|---|---|
-| create → `motDePasseInitial` | non-empty | `EZv47EyUQjkKjd`, `exit=0` |
-| login before / after deactivation | 200 / 401 | 200 / 401 |
-| `GET /utilisateurs/{id}` has no password | OK | OK |
-| self-deactivation / self-demotion | 409 / 409 | 409 / 409 |
-| journal paginated | a total | 5 |
-| `gares?q=sous` / `trains?type=` | ≥1 / ≥1 | 2 / 12 |
-| `DELETE /lignes/1` | 409 | 409, message names what references it |
-| responsable on `/journal-connexions` | 403 | 403 |
-| *(added)* responsable + malformed body | 403 not 400 | 403 |
+| `POST /abonnements` | created | 201, `Set-Cookie: jeton_abonne` HttpOnly |
+| same again | not an error | 200, row updated |
+| `GET /notifications` \| `.total` | ≥ 1 | **56** |
+| Mailpit `.total` | ≥ 1 | **9** |
+| `POST /regles-alerte` (admin) | 201 | 201 |
+| `GET /regles-alerte` (voyageur) | 403 | 403 |
+| *(added)* voyageur + malformed body | 403 not 400 | 403 |
+| ingestion with SMTP dead | < 200 ms | **18–29 ms**, 202 |
+| the row it produced | `ECHEC` + `erreur` | `MailSendException: Mail server connection failed…` |
 
-**Browser walkthrough done** (frontend 3001 → API 8082, both since stopped, so
-the demo stack was never interrupted): created a user through the dialog, saw the
-one-time password, logged in as them, deactivated them **from the UI**, login
-refused; `q=sous` narrowed 39 gares to 2; renamed a gare and saw it on the public
-`/gares/33` page, then restored it; re-saved ligne 1 and its **43-point trace came
-back 43 points** — the carry-through the read-only preview depends on.
+**Two acceptance commands cannot pass as written, and neither is a code defect:**
 
-## Not verified
-
-- The map still has not been *seen* rendering: the in-app browser reports
-  `document.hidden` permanently true. Unchanged since phase 4. The gare rename was
-  verified through the public page and endpoint, the same data path the map reads.
+- `cibleId: 1` — course 1 is a **backfilled 2026-08-04 run, already
+  `TERMINUS_ATTEINT`**. It can never be late again, so that subscription can
+  never produce a notification. Re-run against a course actually circulating
+  today: 56 notifications, 9 emails. Today's course ids start at 1361.
+- The dedup query groups by `(abonnement_id, evenement)` and fails over 3, but
+  one emission writes one row **per channel** and a LIGNE/GARE subscription spans
+  every late course on its target. Grouped on the real key —
+  `(abonnement, evenement, course, canal)` — the **maximum is 2** across 5 383
+  ingested pings, which is the guard working. Supervisor's call whether to
+  loosen the query or tighten the rule.
 
 ## Deferred
 
-- **Into phase 8** — `docs/phases/phase-8.md` was edited during phase 7 to carry
-  the missing `journal_connexion` indexes into `V8__notifications.sql`. **This
-  edit was not made by the session that wrote the code and needs the supervisor's
-  confirmation**; revert it if unwanted, but the index is genuinely absent and the
-  endpoint filters and sorts on `horodatage` and `utilisateur_id`.
-- **Phase 9 candidate** — forced password change on first login: a flag, an
-  endpoint and a redirect, and it would catch the four seeded demo accounts.
-- **Still open** — `EtatCirculationStore` eviction; `position_course` growth;
-  `refresh_token` sweep; `FiltreJwt`/`FiltreCleIngestion` double-registered;
-  `.gitignore` misses `*.log`; `GET /incidents/ouverts` unpaginated by design;
-  `/ingest/*` rate limit; `TableauDepartsGare` has no periodic REST resync.
-- **Known and accepted, from the review** — `?du=` without `?au=` skips the
-  `PlageDates` window guard and scans unbounded (measured 200 on
-  `?du=1900-01-01`); a ligne whose stored trace has fewer than two points cannot
-  be renamed from the console, since the form resends the trace and
-  `@Size(min = 2)` rejects it (0 of 5 seeded lignes affected); `requeteAuthJson`
-  now lives in `auth.ts` but `incidents.ts` and `tableauBord.ts` keep their own
-  copies, left alone as out of scope.
+- **Into phase 9** — a retry or startup sweep for `EN_ATTENTE` notifications
+  (see the deviation table); forced password change on first login; claiming an
+  anonymous subscription at login (out of scope by decision 12); the
+  `/auth/login` and `/ingest/*` rate limits, still declared in `api-contract.md`
+  and unimplemented — `LimiteurDebit` now exists and each is one line in
+  `ConfigurationWeb`.
+- **Raised for the supervisor** — the dedup key bounds messages per *course*, not
+  per *subscriber*. A GARE subscriber received 124 notifications across 62
+  courses in 85 s at x20. That is the spec's key implemented faithfully; whether
+  a per-subscriber cap was intended is a spec question, not a bug.
+- **Still open** — `Dedoublonneur` and `EtatCirculationStore` eviction;
+  `position_course` and `notification` growth; `refresh_token` sweep;
+  `FiltreJwt`/`FiltreCleIngestion` double-registered; `.gitignore` misses `*.log`;
+  `GET /incidents/ouverts` unpaginated by design.
+- **Known and accepted** — an incident edited more than 30 simulated minutes
+  after declaration re-notifies; `?du=` without `?au=` scans unbounded; a ligne
+  whose trace has fewer than two points cannot be renamed; `requeteAuthJson` is
+  duplicated in `incidents.ts` and `tableauBord.ts`.
 
 ## Standing deviations
 
@@ -140,26 +138,20 @@ back 43 points** — the carry-through the read-only preview depends on.
 |---|---|
 | db on **5433**, API on **8081** | Unrelated services own 5432 and 8080 here. |
 | `jq`/`psql` absent; `node` and `docker exec` used | Same URLs, same assertions. |
-| Request bodies with accents sent from a UTF-8 file | Git Bash transcodes argv to the Windows ANSI codepage for a native binary. |
-| **The lignes screen has no "create"** | A new ligne needs a ≥2-point polyline and editing `trace` is out of scope by phase rule. Edit and delete only, stated in the UI. |
-| The ligne edit dialog **resends the loaded `trace` untouched** | `PUT` replaces the whole resource and requires ≥2 points; omitting it turns a rename into a 400 on a hidden field. |
-| **Emails are stored and matched lowercased** | One definition of "the same email" across `creer` and `login`. See the review fix above. |
-| A user row cannot be deleted at all | `journal_connexion` *and* `refresh_token` both hold an FK to it. Deactivation is the only removal, by design. |
-| Earlier deviations from phases 2–6 | Unchanged. |
+| **A notification killed in flight stays `EN_ATTENTE` for ever** | Nothing retries and nothing sweeps at startup. Measured: 344 rows left by a `taskkill /F` of the API, none at all across a clean run. The `ECHEC` path covers an adapter that throws, not a process that dies. |
+| **A second replay needs today's courses reset first** | After one run the day's 80 courses are `TERMINUS_ATTEINT` and the simulator has nothing to move. `docs/RUNBOOK.md` §9 has the reset. |
+| **Mailpit has no volume** | The inbox is meant to be thrown away; restarting the container empties it. |
+| The bell **renders nothing** until you follow something | A bell that cannot ring is chrome. |
+| Only `IN_APP` and `EMAIL` offered in the UI | `SMS` is a stub with no phone number in the model; `AFFICHAGE` is the station board, already delivered. |
+| Notification read state is **client-side** | No `lu` column; a write per glance on a public endpoint is worse. Ids are monotonic. |
+| The **account** subscription path is unreachable from the UI | `EventSource` cannot send `Authorization`, and the portal sends none. Built and tested, not exercised by the browser. |
+| Earlier deviations from phases 2–7 | Unchanged. |
 
 ## Running now
 
-Postgres `trino-db` on **5433**, API on **8081** (restarted, carries phase 7 **and**
-the review fixes), `next start` on 3000, simulator x20. The database is back to the
-four seeded accounts — every account created while testing was removed, along with
-its journal and refresh-token rows.
+Postgres `trino-db` on **5433** and `trino-mailpit` on **1025/8025** are up; the
+API, simulator and frontend are stopped. `docs/RUNBOOK.md` has every command to
+bring them back, query the database and re-run these checks by hand.
 
-```
-docker compose up -d db     # override publishes 5433
-cd backend && ./mvnw -q -pl api spring-boot:run \
-  -Dspring-boot.run.arguments="--server.port=8081 --spring.datasource.url=jdbc:postgresql://localhost:5433/trino"
-TRINO_API_BASE_URL=http://localhost:8081 TRINO_SIM_ACCELERATION=20 \
-  TRINO_SIM_HEURE_DEBUT=05:25 ./mvnw -q -pl simulateur spring-boot:run
-TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/backfill.sh
-cd frontend && npm run build && npm run start
-```
+The database is back to its seeded state: 4 alert rules as V8 wrote them, 0
+subscriptions, 0 notifications, test incidents removed, inbox emptied.

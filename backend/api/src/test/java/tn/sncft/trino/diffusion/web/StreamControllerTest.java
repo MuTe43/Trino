@@ -10,6 +10,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tn.sncft.trino.diffusion.HubSse;
+import tn.sncft.trino.securite.ResolveurIdentiteAbonne;
 
 import java.util.List;
 import java.util.Map;
@@ -33,7 +34,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(StreamController.class)
 @AutoConfigureMockMvc(addFilters = false)
-@Import(HubSse.class)
+// ResolveurIdentiteAbonne since phase 8: the controller derives this
+// connection's `abonne:` channel from the caller's own credential. Real rather
+// than mocked, so a request carrying no cookie and no header genuinely resolves
+// to no identity -- which is what every test below sends.
+@Import({HubSse.class, ResolveurIdentiteAbonne.class})
 // A MockMvc async request is never completed by a client, so every subscription
 // a test opens outlives it. Sharing one cached context would leave the hub
 // counting the previous test's connections, which is exactly the number these
@@ -47,10 +52,66 @@ class StreamControllerTest {
     @Autowired
     private HubSse hub;
 
+    /** Shaped like a real one: 32 base64url characters, so JetonAbonne accepts it. */
+    private static final String JETON = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
     private MvcResult ouvrirMultiplex(String lignes, String gares) throws Exception {
         return mockMvc.perform(get("/api/v1/stream").param("lignes", lignes).param("gares", gares))
                 .andExpect(request().asyncStarted())
                 .andReturn();
+    }
+
+    /**
+     * The rule the phase file states outright: a client does not get to name the
+     * {@code abonne:} channel. The subscription list is client-supplied, so a
+     * parameter for it would let anyone stream another passenger's notifications
+     * with a token they guessed or stole. It is derived from the caller's own
+     * credential, and any {@code abonnes=} sent is simply not read.
+     */
+    @Test
+    @DisplayName("le paramètre abonnes= est ignoré : ce canal ne s'ouvre pas sur demande du client")
+    void parametreAbonnesIgnore() throws Exception {
+        mockMvc.perform(get("/api/v1/stream")
+                        .param("lignes", "1")
+                        .param("abonnes", JETON))
+                .andExpect(request().asyncStarted());
+
+        assertEquals(1, hub.nombreAbonnes(HubSse.canalLigne(1L)));
+        assertEquals(0, hub.nombreAbonnes(HubSse.canalAbonneJeton(JETON)));
+    }
+
+    @Test
+    @DisplayName("le jeton de l'appelant ouvre son propre canal, en en-tête comme en cookie")
+    void jetonDeLAppelantOuvreSonCanal() throws Exception {
+        mockMvc.perform(get("/api/v1/stream").param("lignes", "1").header("X-Abonne", JETON))
+                .andExpect(request().asyncStarted());
+        assertEquals(1, hub.nombreAbonnes(HubSse.canalAbonneJeton(JETON)));
+
+        mockMvc.perform(get("/api/v1/stream").param("lignes", "1")
+                        .cookie(new jakarta.servlet.http.Cookie("jeton_abonne", JETON)))
+                .andExpect(request().asyncStarted());
+        assertEquals(2, hub.nombreAbonnes(HubSse.canalAbonneJeton(JETON)));
+    }
+
+    /**
+     * The bell in the public header is the only live consumer on a page with no
+     * map and no board. Its connection carries one channel, named by nobody, so
+     * the request has an empty query -- and must not be refused as an empty
+     * subscription.
+     */
+    @Test
+    @DisplayName("un jeton seul suffit à ouvrir le flux, sans ligne ni gare")
+    void jetonSeulOuvreLeFlux() throws Exception {
+        mockMvc.perform(get("/api/v1/stream").header("X-Abonne", JETON))
+                .andExpect(request().asyncStarted());
+
+        assertEquals(1, hub.nombreAbonnes(HubSse.canalAbonneJeton(JETON)));
+    }
+
+    @Test
+    @DisplayName("sans jeton ni canal, l'abonnement vide reste refusé")
+    void sansJetonNiCanalToujoursRefuse() throws Exception {
+        mockMvc.perform(get("/api/v1/stream")).andExpect(status().isBadRequest());
     }
 
     @Test
