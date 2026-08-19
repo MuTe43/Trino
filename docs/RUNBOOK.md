@@ -488,3 +488,74 @@ docker compose down -v && docker compose up -d db mailpit
 - **PowerShell differs.** No `&&` chaining (`A; if ($?) { B }`), and env vars are
   `$env:VAR = 'x'; cmd` rather than `VAR=x cmd`. The commands above assume Git
   Bash.
+
+---
+
+## 11. Phase 9 — charge, sauvegarde, démonstration
+
+### 11.1 La pile entière en une commande
+
+```bash
+docker compose up -d
+docker compose ps            # les cinq services, avec leur santé
+docker compose logs -f api
+```
+
+Depuis une base vierge : `docker compose down -v && docker compose up -d`, puis
+comptez deux minutes le temps que Flyway migre et que la journée se matérialise.
+
+### 11.2 Test de charge
+
+```bash
+TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/charge.sh
+docker compose restart api                       # horloge simulée remise à zéro
+cd backend && TRINO_API_BASE_URL=http://localhost:8081   TRINO_SIM_HEURE_DEBUT=04:55 TRINO_SIM_ACCELERATION=5   ./mvnw -q -pl simulateur spring-boot:run
+# dans un autre terminal, une fois le plateau atteint (~4 min) :
+TRINO_API_BASE_URL=http://localhost:8081 node scripts/mesures.mjs --duree=300
+```
+
+La latence d'ingestion n'est pas dans la sortie de `mesures.mjs` : elle est
+journalisée chaque minute par le simulateur (`Latence d'ingestion : n=… p50=…`).
+
+**Toujours nettoyer après.** La flotte de charge fait échouer `CoherenceSeedTest`
+si elle reste, et rend la carte illisible :
+
+```bash
+TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/charge.sh --nettoyer
+```
+
+Pour la mémoire JVM, démarrer l'API avec `--spring.profiles.active=metrologie`,
+qui expose `/actuator/metrics`. Ce profil n'est pas actif par défaut : `/actuator/**`
+est en accès libre, et les métriques renseignent gratuitement un attaquant.
+
+### 11.3 Sauvegarde et restauration
+
+```bash
+bash scripts/sauvegarde.sh                  # rétention 7 par défaut
+bash scripts/sauvegarde.sh --retention=30
+gunzip -c sauvegardes/trino-AAAA-MM-JJ-hhmm.sql.gz | docker exec -i trino-db psql -U trino -d trino
+```
+
+### 11.4 Démonstration
+
+```bash
+docker compose stop api        # obligatoire : demo.sh refuse de tourner sinon
+bash scripts/demo.sh           # remet à zéro, régénère, historise, lance le feed
+```
+
+Le script imprime les URL exactes des huit étapes, identifiants dérivés à
+l'exécution.
+
+### 11.5 Vérifier le balayage des notifications orphelines
+
+```bash
+docker exec trino-db psql -U trino -d trino -c "
+insert into notification (evenement, destinataire, canal, sujet, contenu, statut, cree_at)
+values ('RETARD_SEUIL','test@sncft.tn','EMAIL','Tuée en vol','x','EN_ATTENTE', now() - interval '30 seconds');"
+docker compose restart api
+docker exec trino-db psql -U trino -d trino -c "select statut, erreur from notification;"
+```
+
+Attendu : `ECHEC`, cause « Processus interrompu avant la remise ». Une ligne de
+plus de dix minutes est prise par le balayage périodique, avec l'autre cause.
+

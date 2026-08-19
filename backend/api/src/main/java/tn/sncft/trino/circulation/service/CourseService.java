@@ -23,6 +23,7 @@ import tn.sncft.trino.referentiel.domaine.TypeTrain;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.Collection;
@@ -71,10 +72,17 @@ public class CourseService {
 
     @Transactional(readOnly = true)
     public Page<CourseResumeDTO> lister(LocalDate date, Long ligneId, Long gareId, List<StatutCourse> statuts,
-                                        TypeTrain type, String q, int page, int taille) {
+                                        TypeTrain type, String q, CriteresRecherche criteres,
+                                        int page, int taille) {
+        LocalDate jour = date == null ? LocalDate.now(ZONE_RESEAU) : date;
+        CriteresRecherche filtres = criteres == null ? CriteresRecherche.aucun() : criteres;
+
         Page<Course> courses = courseRepository.rechercher(
-                date == null ? LocalDate.now(ZONE_RESEAU) : date,
-                ligneId, gareId, statutsOuTous(statuts), type, motif(q),
+                jour, ligneId, gareId, statutsOuTous(statuts), type, motif(q),
+                motif(filtres.region()),
+                motif(filtres.destination()),
+                borneBasse(jour, filtres.heureDebut()),
+                borneHaute(jour, filtres.heureFin()),
                 PageableUtils.de(page, taille));
 
         Map<Long, List<PassageGare>> passages = chargerPassages(
@@ -84,10 +92,76 @@ public class CourseService {
                 versResume(course, passages.getOrDefault(course.getId(), List.of())));
     }
 
-    /** Unified search. Same query as {@link #lister}, with only {@code q} bound. */
+    /**
+     * Unified search: the same query as {@link #lister} with the criteria §4.9
+     * of the cahier des charges asks for.
+     *
+     * <p>Every criterion is optional, {@code q} included. Phase 9 added region,
+     * destination and the departure window, and a caller filtering on region
+     * alone has nothing to put in {@code q} -- requiring it would have made the
+     * three new criteria unreachable without also naming a train.
+     */
     @Transactional(readOnly = true)
-    public Page<CourseResumeDTO> rechercher(String q, LocalDate date, int page, int taille) {
-        return lister(date, null, null, null, null, q, page, taille);
+    public Page<CourseResumeDTO> rechercher(String q, LocalDate date, CriteresRecherche criteres,
+                                            int page, int taille) {
+        return lister(date, null, null, null, null, q, criteres, page, taille);
+    }
+
+    /**
+     * The optional search criteria added in phase 9, grouped so the two list
+     * methods do not grow four more positional parameters each -- at eleven
+     * arguments an accidental transposition of two adjacent strings compiles
+     * and silently searches the wrong column.
+     *
+     * <p>{@code heureDebut}/{@code heureFin} are wall-clock times in
+     * Africa/Tunis, resolved against the service date by {@link #instant}.
+     */
+    public record CriteresRecherche(String region, String destination,
+                                    LocalTime heureDebut, LocalTime heureFin) {
+
+        public static CriteresRecherche aucun() {
+            return new CriteresRecherche(null, null, null, null);
+        }
+    }
+
+    /**
+     * Resolves a requested wall-clock time against the service date, falling
+     * back to a bound of that date when the caller named none.
+     *
+     * <p>Two separate things are going on here, and both are load-bearing.
+     *
+     * <p>The conversion: a timetable is written in local time and the column is a
+     * timestamptz in UTC (invariant 6), so "06:00 to 09:00" has to become two
+     * instants in Africa/Tunis before it can be compared to anything. Binding the
+     * bare time would compare local hours against UTC ones and shift every result
+     * by the network's offset -- an hour of departures wrong, with nothing in the
+     * response to show it.
+     *
+     * <p>The fallback: an unset bound becomes a substitute rather than a null.
+     * Postgres cannot infer a type for a parameter that only ever appears in
+     * {@code ? is null}, so binding null there made every call to
+     * {@code /recherche} a 500 -- see {@code CourseRepository.CRITERES}.
+     *
+     * <p>The substitute is a <em>whole day beyond</em> the service date on each
+     * side, not the start and end of the date itself. Both are wide enough today,
+     * because {@code GenerateurCourses} builds {@code departTheorique} from the
+     * same date in the same zone -- but "wide enough because two unrelated pieces
+     * of code happen to agree" is a constraint nobody declared, on the endpoint
+     * that feeds {@code /courses} and the map. Any course whose departure fell
+     * outside its own local day would have vanished from every listing with no
+     * error. A ±1 day margin cannot exclude a row whatever the offset, so the
+     * default window is provably not a filter.
+     */
+    private OffsetDateTime borneBasse(LocalDate date, LocalTime heure) {
+        return heure != null
+                ? date.atTime(heure).atZone(ZONE_RESEAU).toOffsetDateTime()
+                : date.minusDays(1).atStartOfDay(ZONE_RESEAU).toOffsetDateTime();
+    }
+
+    private OffsetDateTime borneHaute(LocalDate date, LocalTime heure) {
+        return heure != null
+                ? date.atTime(heure).atZone(ZONE_RESEAU).toOffsetDateTime()
+                : date.plusDays(1).atTime(LocalTime.MAX).atZone(ZONE_RESEAU).toOffsetDateTime();
     }
 
     /**

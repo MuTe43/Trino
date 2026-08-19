@@ -1,9 +1,7 @@
-import { ApiError, API_BASE_URL } from "./api";
-import { authFetch } from "./auth";
+import { requeteAuthJson } from "./auth";
 import type {
   CorpsIncident,
   CorpsModificationIncident,
-  ErreurApi,
   Gravite,
   IncidentDTO,
   PageDTO,
@@ -20,32 +18,6 @@ import type {
  * the URL rule and `@PreAuthorize` (invariant 9). The client never decides
  * authorisation; it only renders what it is given, or the error it is handed.
  */
-
-async function lireErreur(reponse: Response): Promise<ErreurApi | undefined> {
-  try {
-    return (await reponse.json()) as ErreurApi;
-  } catch {
-    return undefined;
-  }
-}
-
-async function requeteAuth<T>(chemin: string, init: RequestInit = {}): Promise<T> {
-  let reponse: Response;
-  try {
-    reponse = await authFetch(chemin, init);
-  } catch {
-    throw new ApiError(0, `Impossible de joindre l'API (${API_BASE_URL}${chemin}).`);
-  }
-  if (!reponse.ok) {
-    const erreur = await lireErreur(reponse);
-    throw new ApiError(
-      reponse.status,
-      erreur?.message ?? `Erreur API ${reponse.status} sur ${chemin}.`,
-      erreur,
-    );
-  }
-  return (await reponse.json()) as T;
-}
 
 /** Filters accepted by `GET /incidents`. All optional. */
 export interface FiltresIncidents {
@@ -71,19 +43,19 @@ function requeteIncidents(filtres: FiltresIncidents): string {
 
 /** `GET /incidents` — the paged, filterable incident list behind the console. */
 export function listerIncidents(filtres: FiltresIncidents = {}): Promise<PageDTO<IncidentDTO>> {
-  return requeteAuth<PageDTO<IncidentDTO>>(`/incidents${requeteIncidents(filtres)}`);
+  return requeteAuthJson<PageDTO<IncidentDTO>>(`/incidents${requeteIncidents(filtres)}`);
 }
 
 /** `GET /incidents/ouverts` — every OUVERT/EN_COURS incident, for a map's
  * initial snapshot before the SSE deltas start. */
 export function listerIncidentsOuverts(): Promise<IncidentDTO[]> {
-  return requeteAuth<IncidentDTO[]>("/incidents/ouverts");
+  return requeteAuthJson<IncidentDTO[]>("/incidents/ouverts");
 }
 
 /** `POST /incidents` — declares a new incident, and via `courseId` optionally
  * changes that course's status and/or names its delay cause. */
 export function declarerIncident(corps: CorpsIncident): Promise<IncidentDTO> {
-  return requeteAuth<IncidentDTO>("/incidents", {
+  return requeteAuthJson<IncidentDTO>("/incidents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(corps),
@@ -94,7 +66,7 @@ export function declarerIncident(corps: CorpsIncident): Promise<IncidentDTO> {
  * gravité/description/impact. Never sends `statut: "RESOLU"` -- the server
  * rejects that with 403 by design, see `resoudreIncident`. */
 export function modifierIncident(id: number, corps: CorpsModificationIncident): Promise<IncidentDTO> {
-  return requeteAuth<IncidentDTO>(`/incidents/${id}`, {
+  return requeteAuthJson<IncidentDTO>(`/incidents/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(corps),
@@ -103,5 +75,5 @@ export function modifierIncident(id: number, corps: CorpsModificationIncident): 
 
 /** `POST /incidents/{id}/resolution` — `RESPONSABLE_EXPLOITATION` only. */
 export function resoudreIncident(id: number): Promise<IncidentDTO> {
-  return requeteAuth<IncidentDTO>(`/incidents/${id}/resolution`, { method: "POST" });
+  return requeteAuthJson<IncidentDTO>(`/incidents/${id}/resolution`, { method: "POST" });
 }

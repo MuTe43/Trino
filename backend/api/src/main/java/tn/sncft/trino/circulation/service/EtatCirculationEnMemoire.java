@@ -7,6 +7,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -55,5 +56,13 @@ public class EtatCirculationEnMemoire implements EtatCirculationStore {
     @Override
     public void oublier(long courseId) {
         etats.remove(courseId);
+    }
+
+    @Override
+    public Set<Long> coursesConnues() {
+        // A copy: the caller subtracts the live set from this and forgets the
+        // rest, and iterating the live keySet while removing from it would be
+        // removing the ground it stands on.
+        return Set.copyOf(etats.keySet());
     }
 }

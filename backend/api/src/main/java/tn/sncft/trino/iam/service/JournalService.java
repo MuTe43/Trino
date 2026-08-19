@@ -72,9 +72,7 @@ public class JournalService {
     @Transactional(readOnly = true)
     public Page<JournalConnexionDTO> consulter(Boolean succes, Long utilisateurId, LocalDate du, LocalDate au,
                                                 int page, int taille) {
-        if (du != null && au != null) {
-            PlageDates.verifier(du, au);
-        }
+        PlageDates.verifierOptionnelle(du, au);
         OffsetDateTime debut = du != null ? du.atStartOfDay(ZONE_TUNIS).toOffsetDateTime() : null;
         OffsetDateTime finExclusive = au != null ? au.plusDays(1).atStartOfDay(ZONE_TUNIS).toOffsetDateTime() : null;
 

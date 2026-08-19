@@ -1,9 +1,8 @@
-import { ApiError, API_BASE_URL } from "./api";
-import { authFetch, getAccessToken } from "./auth";
+import { ApiError } from "./api";
+import { authFetch, getAccessToken, parseErreur, requeteAuthJson } from "./auth";
 import type {
   BucketRetardDTO,
   CaseHeatmapDTO,
-  ErreurApi,
   Granularite,
   KpiJourDTO,
   PointPonctualiteDTO,
@@ -21,46 +20,20 @@ import type {
  * the error it is handed.
  */
 
-async function lireErreur(reponse: Response): Promise<ErreurApi | undefined> {
-  try {
-    return (await reponse.json()) as ErreurApi;
-  } catch {
-    return undefined;
-  }
-}
-
-async function getAuth<T>(chemin: string): Promise<T> {
-  let reponse: Response;
-  try {
-    reponse = await authFetch(chemin);
-  } catch {
-    throw new ApiError(0, `Impossible de joindre l'API (${API_BASE_URL}${chemin}).`);
-  }
-  if (!reponse.ok) {
-    const erreur = await lireErreur(reponse);
-    throw new ApiError(
-      reponse.status,
-      erreur?.message ?? `Erreur API ${reponse.status} sur ${chemin}.`,
-      erreur,
-    );
-  }
-  return (await reponse.json()) as T;
-}
-
 export function chargerKpi(date: string): Promise<KpiJourDTO> {
-  return getAuth<KpiJourDTO>(`/tableau-bord/kpi?date=${date}`);
+  return requeteAuthJson<KpiJourDTO>(`/tableau-bord/kpi?date=${date}`);
 }
 
 export function chargerRetardsParLigne(date: string): Promise<RetardParLigneDTO[]> {
-  return getAuth<RetardParLigneDTO[]>(`/tableau-bord/retards-par-ligne?date=${date}`);
+  return requeteAuthJson<RetardParLigneDTO[]>(`/tableau-bord/retards-par-ligne?date=${date}`);
 }
 
 export function chargerHeatmap(du: string, au: string): Promise<CaseHeatmapDTO[]> {
-  return getAuth<CaseHeatmapDTO[]>(`/tableau-bord/heatmap?du=${du}&au=${au}`);
+  return requeteAuthJson<CaseHeatmapDTO[]>(`/tableau-bord/heatmap?du=${du}&au=${au}`);
 }
 
 export function chargerDistributionRetards(du: string, au: string): Promise<BucketRetardDTO[]> {
-  return getAuth<BucketRetardDTO[]>(`/tableau-bord/distribution-retards?du=${du}&au=${au}`);
+  return requeteAuthJson<BucketRetardDTO[]>(`/tableau-bord/distribution-retards?du=${du}&au=${au}`);
 }
 
 export function chargerPonctualite(
@@ -68,7 +41,7 @@ export function chargerPonctualite(
   au: string,
   granularite: Granularite = "JOUR",
 ): Promise<PointPonctualiteDTO[]> {
-  return getAuth<PointPonctualiteDTO[]>(
+  return requeteAuthJson<PointPonctualiteDTO[]>(
     `/rapports/ponctualite?du=${du}&au=${au}&granularite=${granularite}`,
   );
 }
@@ -91,7 +64,7 @@ export async function telechargerExport(
     `/rapports/${nom}/export?du=${du}&au=${au}&format=${format}`,
   );
   if (!reponse.ok) {
-    const erreur = await lireErreur(reponse);
+    const erreur = await parseErreur(reponse);
     throw new ApiError(reponse.status, erreur?.message ?? "L'export a échoué.", erreur);
   }
 

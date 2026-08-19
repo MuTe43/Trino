@@ -27,6 +27,31 @@ public final class PlageDates {
     private PlageDates() {
     }
 
+    /**
+     * The same check for an endpoint where the range itself is optional: both
+     * bounds or neither, never one.
+     *
+     * <p>{@code /journal-connexions} used to guard with {@code if (du != null &&
+     * au != null)}, which reads as caution and is the opposite: naming one bound
+     * skipped every check, so {@code ?du=1900-01-01} answered 200 and scanned the
+     * table from the beginning of time. Half a range is not a narrower query than
+     * no range — it is a wider one, because the missing side is unbounded.
+     *
+     * <p>Kept here rather than repeated at each call site for the reason the
+     * class exists: phase 6 already produced two endpoints that disagreed about
+     * what a legal range was.
+     */
+    public static void verifierOptionnelle(LocalDate du, LocalDate au) {
+        if (du == null && au == null) {
+            return;
+        }
+        if (du == null || au == null) {
+            throw new IllegalArgumentException(
+                    "Les bornes du et au vont par paire : indiquez les deux ou aucune.");
+        }
+        verifier(du, au);
+    }
+
     public static void verifier(LocalDate du, LocalDate au) {
         if (du == null || au == null) {
             throw new IllegalArgumentException("Les bornes du et au sont obligatoires.");

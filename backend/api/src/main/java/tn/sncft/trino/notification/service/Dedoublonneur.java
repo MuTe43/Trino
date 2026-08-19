@@ -1,5 +1,6 @@
 package tn.sncft.trino.notification.service;
 
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import tn.sncft.trino.circulation.service.HorlogeCirculation;
 import tn.sncft.trino.notification.domaine.Evenement;
@@ -76,9 +77,27 @@ public class Dedoublonneur {
     }
 
     /**
-     * Drops keys older than one full window. Called only on the rarer path (an
+     * The same eviction on a timer, for the case the emission path cannot cover.
+     *
+     * <p>{@link #evincerPerimes} runs only when a notification actually goes
+     * out, which keeps the suppressed path cheap but means a system that goes
+     * quiet keeps whatever it was tracking when the last message left. Nothing
+     * grows -- no emission, no new key -- but the entries never leave either,
+     * and "bounded because nobody is using it" is not a bound.
+     *
+     * <p>Five minutes of wall clock. The window itself is measured in simulated
+     * minutes, so this deliberately does not try to match it: it is a floor on
+     * how often eviction happens, not a second definition of the window.
+     */
+    @Scheduled(fixedDelay = 300_000)
+    public void balayer() {
+        evincerPerimes(horloge.maintenant());
+    }
+
+    /**
+     * Drops keys older than one full window. Called on the rarer path (an
      * emission actually going out), so the common case -- a ping suppressed by
-     * the guard -- stays a single map operation.
+     * the guard -- stays a single map operation, and from {@link #balayer()}.
      */
     private void evincerPerimes(OffsetDateTime maintenant) {
         OffsetDateTime limite = maintenant.minus(FENETRE);

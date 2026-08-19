@@ -12,3 +12,7 @@
 .DS_Store
 Thumbs.db
 *.log
+
+# Database dumps from scripts/sauvegarde.sh. They contain every row in the
+# database, including the bcrypt hashes and the subscriber tokens.
+sauvegardes/

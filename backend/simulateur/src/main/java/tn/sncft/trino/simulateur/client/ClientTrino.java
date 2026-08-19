@@ -34,8 +34,10 @@ public class ClientTrino {
 
     private final RestClient restClient;
     private final String cle;
+    private final JournalLatence journalLatence;
 
-    public ClientTrino(ProprietesSimulateur proprietes) {
+    public ClientTrino(ProprietesSimulateur proprietes, JournalLatence journalLatence) {
+        this.journalLatence = journalLatence;
         // Timeouts are not optional here. A hang is not an exception, so
         // without them a wedged API blocks the single scheduler thread
         // indefinitely and the producer stops without logging anything at all.
@@ -67,11 +69,18 @@ public class ClientTrino {
         }
     }
 
-    /** Posts a tick's positions as one batch. */
+    /**
+     * Posts a tick's positions as one batch, timing the round trip.
+     *
+     * <p>Only a completed call is recorded. A transport failure takes the read
+     * timeout, so counting it would mean a dead API showed up in the report as a
+     * ten-second ingest latency rather than as an outage.
+     */
     public ResultatIngestionDTO publier(List<PingDTO> pings) {
         if (pings.isEmpty()) {
             return new ResultatIngestionDTO(0, 0);
         }
+        long debut = System.nanoTime();
         try {
             ResultatIngestionDTO resultat = restClient.post()
                     .uri("/api/v1/ingest/positions")
@@ -80,6 +89,7 @@ public class ClientTrino {
                     .body(new LotPingsDTO(pings))
                     .retrieve()
                     .body(ResultatIngestionDTO.class);
+            journalLatence.enregistrer((System.nanoTime() - debut) / 1_000_000L);
             return resultat == null ? new ResultatIngestionDTO(0, 0) : resultat;
         } catch (RestClientException e) {
             log.warn("Envoi de {} position(s) impossible : {}", pings.size(), e.getMessage());

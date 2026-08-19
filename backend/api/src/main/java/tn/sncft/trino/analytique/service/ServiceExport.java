@@ -9,10 +9,13 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tn.sncft.trino.analytique.dto.DisponibiliteTrainDTO;
 import tn.sncft.trino.analytique.dto.FormatExport;
 import tn.sncft.trino.analytique.dto.Granularite;
 import tn.sncft.trino.analytique.dto.LigneIncidentsDTO;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
+import tn.sncft.trino.analytique.dto.RetardParGareDTO;
+import tn.sncft.trino.analytique.dto.RetardParLigneDTO;
 import tn.sncft.trino.analytique.dto.TableauRapport;
 import tn.sncft.trino.analytique.repository.AnalytiqueRepository;
 import tn.sncft.trino.commun.PlageDates;
@@ -68,11 +71,16 @@ public class ServiceExport {
 
     public ServiceExport(AnalytiqueRepository analytiqueRepository) {
         this.analytiqueRepository = analytiqueRepository;
-        // Phase 6 added "incidents": one entry and one builder, and no new CSV
-        // or XLSX code -- which was the point of registering reports by name.
+        // Phase 6 added "incidents" and phase 9 the last three: one entry and
+        // one builder each, and no new CSV or XLSX code -- which was the point
+        // of registering reports by name. §4.11 of the cahier des charges lists
+        // six exportable reports; these are them.
         this.rapports = Map.of(
                 "ponctualite", this::rapportPonctualite,
-                "incidents", this::rapportIncidents);
+                "incidents", this::rapportIncidents,
+                "retards-par-ligne", this::rapportRetardsParLigne,
+                "retards-par-gare", this::rapportRetardsParGare,
+                "disponibilite-trains", this::rapportDisponibiliteTrains);
     }
 
     @PreAuthorize("hasRole('RESPONSABLE_EXPLOITATION')")
@@ -133,6 +141,69 @@ public class ServiceExport {
         }
         return new TableauRapport("incidents",
                 List.of("Type", "Gravité", "Total", "Résolus", "Délai moyen de résolution (h)"),
+                lignes);
+    }
+
+    private TableauRapport rapportRetardsParLigne(LocalDate du, LocalDate au) {
+        List<RetardParLigneDTO> lignesRetard = analytiqueRepository.retardsParLigne(du, au);
+        List<List<Object>> lignes = new ArrayList<>(lignesRetard.size());
+        for (RetardParLigneDTO retard : lignesRetard) {
+            lignes.add(List.of(
+                    retard.ligneNom(),
+                    retard.courses(),
+                    retard.coursesEnRetard(),
+                    // Share of the courses that ran, not of the courses
+                    // scheduled: the denominator already excludes ANNULE, and a
+                    // cancelled run is not a late one.
+                    retard.courses() == 0 ? 0d : 100d * retard.coursesEnRetard() / retard.courses(),
+                    retard.retardMoyenMin(),
+                    retard.retardMaxMin()));
+        }
+        return new TableauRapport("retards-par-ligne",
+                List.of("Ligne", "Courses", "Courses en retard", "Part en retard (%)",
+                        "Retard moyen (min)", "Retard maximum (min)"),
+                lignes);
+    }
+
+    private TableauRapport rapportRetardsParGare(LocalDate du, LocalDate au) {
+        List<RetardParGareDTO> gares = analytiqueRepository.retardsParGare(du, au);
+        List<List<Object>> lignes = new ArrayList<>(gares.size());
+        for (RetardParGareDTO gare : gares) {
+            // Arrays.asList, not List.of: region is nullable on gare, and List.of
+            // throws on a null element -- at export time, on whichever station
+            // happens to have no region recorded.
+            lignes.add(Arrays.asList(
+                    gare.gareNom(),
+                    gare.region(),
+                    gare.passages(),
+                    gare.passagesEnRetard(),
+                    gare.passages() == 0 ? 0d : 100d * gare.passagesEnRetard() / gare.passages(),
+                    gare.retardMoyenMin(),
+                    gare.retardMaxMin()));
+        }
+        return new TableauRapport("retards-par-gare",
+                List.of("Gare", "Région", "Passages mesurés", "Passages en retard", "Part en retard (%)",
+                        "Retard moyen (min)", "Retard maximum (min)"),
+                lignes);
+    }
+
+    private TableauRapport rapportDisponibiliteTrains(LocalDate du, LocalDate au) {
+        List<DisponibiliteTrainDTO> trains = analytiqueRepository.disponibiliteTrains(du, au);
+        List<List<Object>> lignes = new ArrayList<>(trains.size());
+        for (DisponibiliteTrainDTO train : trains) {
+            // train.nom is nullable in the référentiel, so Arrays.asList again.
+            lignes.add(Arrays.asList(
+                    train.trainNumero(),
+                    train.trainNom(),
+                    train.ligneNom(),
+                    train.coursesProgrammees(),
+                    train.coursesRealisees(),
+                    train.coursesAnnulees(),
+                    train.tauxDisponibilite() * 100));
+        }
+        return new TableauRapport("disponibilite-trains",
+                List.of("Train", "Nom", "Ligne", "Courses programmées", "Courses réalisées",
+                        "Courses annulées", "Disponibilité (%)"),
                 lignes);
     }
 

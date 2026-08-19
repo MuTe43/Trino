@@ -45,7 +45,7 @@ class CourseControllerTest {
     @SuppressWarnings("unchecked")
     private void stubService() {
         Page<CourseResumeDTO> vide = new PageImpl<>(List.of());
-        when(courseService.lister(any(), any(), any(), any(), any(), any(), anyInt(), anyInt()))
+        when(courseService.lister(any(), any(), any(), any(), any(), any(), any(), anyInt(), anyInt()))
                 .thenReturn(vide);
     }
 
@@ -59,7 +59,7 @@ class CourseControllerTest {
 
         ArgumentCaptor<List<StatutCourse>> captor = ArgumentCaptor.forClass(List.class);
         verify(courseService).lister(isNull(), isNull(), isNull(), captor.capture(), isNull(), isNull(),
-                eq(0), eq(20));
+                any(), eq(0), eq(20));
         org.junit.jupiter.api.Assertions.assertEquals(List.of(StatutCourse.RETARDE), captor.getValue());
     }
 
@@ -73,7 +73,7 @@ class CourseControllerTest {
 
         ArgumentCaptor<List<StatutCourse>> captor = ArgumentCaptor.forClass(List.class);
         verify(courseService).lister(isNull(), isNull(), isNull(), captor.capture(), isNull(), isNull(),
-                eq(0), eq(20));
+                any(), eq(0), eq(20));
         org.junit.jupiter.api.Assertions.assertEquals(
                 List.of(StatutCourse.EN_CIRCULATION, StatutCourse.RETARDE), captor.getValue());
     }
@@ -86,7 +86,8 @@ class CourseControllerTest {
         mockMvc.perform(get("/api/v1/courses"))
                 .andExpect(status().isOk());
 
-        verify(courseService).lister(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), eq(0), eq(20));
+        verify(courseService).lister(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(),
+                any(), eq(0), eq(20));
     }
 
     @Test

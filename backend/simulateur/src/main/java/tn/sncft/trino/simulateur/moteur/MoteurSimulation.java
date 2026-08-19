@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import tn.sncft.trino.simulateur.client.ClientTrino;
+import tn.sncft.trino.simulateur.client.JournalLatence;
 import tn.sncft.trino.simulateur.config.ProprietesSimulateur;
 import tn.sncft.trino.simulateur.dto.CourseDuJourDTO;
 import tn.sncft.trino.simulateur.dto.PingDTO;
@@ -17,6 +18,7 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,19 +47,39 @@ public class MoteurSimulation {
     private static final ZoneId ZONE_RESEAU = ZoneId.of("Africa/Tunis");
     private static final int TAILLE_LOT_MAX = 500;
 
+    /**
+     * Ticks between latency summaries. Twelve is a minute at the default tick,
+     * which is often enough to watch a load run develop and rare enough that it
+     * does not bury the per-tick line during a demo.
+     */
+    private static final int TICKS_PAR_RESUME_LATENCE = 12;
+
+    /**
+     * Consecutive courses-du-jour responses a moving course may be missing from
+     * before its state is discarded. One response may legitimately omit it; three
+     * in a row means the API no longer has it.
+     */
+    private static final int ABSENCES_AVANT_OUBLI = 3;
+
     private final ClientTrino client;
+    private final JournalLatence journalLatence;
     private final ProfilPerturbation profil;
     private final ProprietesSimulateur.Simulateur config;
 
     private final Map<Long, EtatCourseSimulee> etats = new LinkedHashMap<>();
+
+    /** How many consecutive reloads each tracked course has been missing from. */
+    private final Map<Long, Integer> absencesConsecutives = new HashMap<>();
 
     private Instant ancreReelle;
     private OffsetDateTime ancreSimulee;
     private Instant dernierTick;
     private long compteurTicks;
 
-    public MoteurSimulation(ClientTrino client, ProfilPerturbation profil, ProprietesSimulateur proprietes) {
+    public MoteurSimulation(ClientTrino client, JournalLatence journalLatence,
+                            ProfilPerturbation profil, ProprietesSimulateur proprietes) {
         this.client = client;
+        this.journalLatence = journalLatence;
         this.profil = profil;
         this.config = proprietes.getSimulateur();
     }
@@ -116,6 +138,11 @@ public class MoteurSimulation {
         }
 
         publier(pings, maintenantSimule);
+
+        // After publishing, so the summary includes the tick just sent.
+        if (compteurTicks % TICKS_PAR_RESUME_LATENCE == 0) {
+            journalLatence.journaliser();
+        }
     }
 
     private void publier(List<PingDTO> pings, OffsetDateTime maintenantSimule) {
@@ -143,14 +170,38 @@ public class MoteurSimulation {
         // 03:00 rollover, the whole of yesterday. Without this the map grows
         // by a service day every day the process stays up.
         //
-        // A course still in motion is never dropped, even if this poll omitted
-        // it. courses-du-jour skips a course whose geometry it cannot build,
-        // so a single bad response would otherwise discard a running train's
-        // state, and the next poll would re-create it at km 0 -- the train
-        // teleporting back to its origin mid-run.
+        // A course still in motion survives a poll that omitted it, because
+        // courses-du-jour skips a course whose geometry it cannot build and a
+        // single bad response would otherwise discard a running train's state,
+        // the next poll re-creating it at km 0 -- the train teleporting back to
+        // its origin mid-run.
+        //
+        // But "survives one bad response" was written as "is never dropped", and
+        // that is not the same thing. When the API's courses genuinely disappear
+        // -- scripts/demo.sh deleting and regenerating the day is the ordinary
+        // case -- this process kept posting positions for ids that no longer
+        // exist, for ever. Measured: "0 position(s) acceptée(s), 178
+        // rejetée(s)", which renders as a map with no trains on it and nothing
+        // in any log saying why. Three consecutive absences is well past any
+        // single malformed response and still bounded.
         Set<Long> vivantes = courses.stream().map(CourseDuJourDTO::courseId).collect(Collectors.toSet());
-        etats.entrySet().removeIf(entree ->
-                !vivantes.contains(entree.getKey()) && !entree.getValue().estEnCours());
+        for (Long courseId : etats.keySet()) {
+            if (vivantes.contains(courseId)) {
+                absencesConsecutives.remove(courseId);
+            } else {
+                absencesConsecutives.merge(courseId, 1, Integer::sum);
+            }
+        }
+        etats.entrySet().removeIf(entree -> {
+            if (vivantes.contains(entree.getKey())) {
+                return false;
+            }
+            if (!entree.getValue().estEnCours()) {
+                return true;
+            }
+            return absencesConsecutives.getOrDefault(entree.getKey(), 0) >= ABSENCES_AVANT_OUBLI;
+        });
+        absencesConsecutives.keySet().retainAll(etats.keySet());
 
         int nouvelles = 0;
         for (CourseDuJourDTO course : courses) {

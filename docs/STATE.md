@@ -6,7 +6,8 @@ narrative goes to `docs/RAPPORT-NOTES.md`, not here.
 
 ## Current phase
 
-Phase 8 done, reviewed and verified. Phase 9 next.
+**Phase 9 done, reviewed and verified. It is the last phase — nothing follows.**
+Two items are left for the supervisor to decide; see *Open*.
 
 ## Done
 
@@ -19,139 +20,113 @@ Phase 8 done, reviewed and verified. Phase 9 next.
 - **Phase 4** — the passenger portal, map, station board.
 - **Phase 5** — dashboards, exports, SSE multiplexing, backfill.
 - **Phase 6** — incidents, exploitation console, public header.
-- **Phase 7** — the administrator console, `/admin/{,gares,lignes,trains,utilisateurs,journal}`.
-- **Phase 8** — notifications et alertes; two use cases that had no implementation.
-  - **Following a train needs no account.** The server mints a `SecureRandom`
-    token on the first `POST /abonnements` and returns it as an `HttpOnly`
-    cookie — never in a body, a URL or a log. Decision 12.
-  - **The client never names its `abonne:` channel.** `StreamController` derives
-    it from the cookie/header and ignores any `abonnes=`; frames carry the alias
-    `abonne:moi`, since the real name embeds the token.
-  - `MoteurNotification` listens to the **same** `Evenement*` records the two
-    diffuseurs already publish. No second event stream; circulation still has no
-    compile-time knowledge that notifications exist.
-  - Every foreign read goes through a **service**. No foreign repository is
-    injected anywhere under `notification/` (decision 1).
-  - **Mailpit** in docker-compose: real SMTP, real inbox at `localhost:8025`.
-  - `/admin/alertes`, on the phase-7 `TableauEditable` + `DialogueEdition` pair
-    (which gained a `multi` field type).
-  - `LimiteurDebit` — the project's first working rate limit, on the one
-    unauthenticated endpoint that sends mail.
+- **Phase 7** — the administrator console.
+- **Phase 8** — notifications, anonymous subscription, Mailpit.
+- **Phase 9** — coverage, hardening, demo:
+  - **Load test at spec scale** — 320 concurrent courses; ingest p50 223 ms /
+    p95 427 ms against a 5 s tick (×22 headroom). Numbers in `RAPPORT-NOTES` §6.
+  - **Three new reports** — `retards-par-ligne`, `retards-par-gare`,
+    `disponibilite-trains`; five of §4.11's six now export.
+  - **Four new search criteria** — `region`, `destination`, `heureDebut`,
+    `heureFin`; `q` became optional so the others are reachable alone.
+  - **`scripts/sauvegarde.sh`** — dated, compressed, completeness-checked dump.
+  - **`docker compose up`** brings the whole stack up from `down -v`.
+  - **`/` is the accueil**, full-screen map moved to `/carte`, delay legend added.
+  - **Sweep-up** — `du`/`au` pairing guard, hot-state eviction by live set,
+    `refresh_token` purge, `EN_ATTENTE` sweep (startup and scheduled),
+    filter double-registration, the two missing rate limits,
+    `requeteAuthJson` deduplicated, station-table REST resync.
+  - **Geometry parity** — `GeometrieLigne` and `GeometrieCourse` pinned to
+    `backend/parite-geometrie.json`; the modules stay unlinked (invariant 3).
 
 ## Migrations applied
 
 `V1__referentiel` · `V2__seed_reseau` · `V3__iam` · `V4__circulation` ·
 `V5__index_circulation` · `V6__backfill_quai_passage_gare` · `V7__incidents` ·
-`V8__notifications`.
+`V8__notifications` · `V9__notification_cree_at`.
 
-V8 carries the two `journal_connexion` indexes phase 7 was forbidden a migration
-for, and seeds **four `regle_alerte` rows** — the acceptance expects a
-notification before it ever creates a rule.
+V9 adds `notification.cree_at` and a partial index on `EN_ATTENTE` rows — what
+lets a stranded notification be told apart from one in flight.
 
 ## Fixed after review
 
-The review found eight items; four were fixed in code, three corrected in the
-docs, one recorded below.
+The reviewer found twelve items; six were fixed in code, the rest recorded.
 
-- **Editing an open incident notified everybody a second time.**
-  `IncidentService.mettreAJour` republishes the same payload on any change, and a
-  description-only edit leaves `statut` at `OUVERT` — which the engine read as a
-  second declaration. Measured live: a description PATCH took **4 notifications
-  to 8** and sent a second identical email. The cause was the deduplication key:
-  incidents were keyed on the *course*, and a ligne-wide incident carries a null
-  course, so every such incident shared one window while an edit of one still got
-  through. Now keyed on the **incident**. Measured after: **4 → 4**. Two
-  regression tests pin it.
-- **`graviteMin` could not be cleared, and the console offered a control saying
-  it could.** An absent field means unchanged, so a null and an omission are the
-  same JSON; choosing "Toutes" returned 200 with the old severity intact. An
-  explicit `effacerGraviteMin` flag now carries the intent. Measured: `MOYENNE` →
-  `MOYENNE` without it, `MOYENNE` → `null` with it.
-- **The subscriber token could reach a log line.** Every log in `HubSse` names
-  the channel it was working on, and an `abonne:` name embeds the credential —
-  inert at the configured level, but the opposite of what the phase file,
-  decision 12 and `JetonAbonne`'s own javadoc promise. Masked at the log
-  boundary.
-- `ResultatAbonnement` moved to `dto/` (invariant 7 — it crosses the controller
-  boundary); the rules list now sorts by enum ordinal rather than by the stored
-  varchar, which was alphabetical and disagreed with the console's own labels.
+- **`docker compose up` served 500 on three routes.** `/trains/{id}`,
+  `/gares/{id}` and `/affichage/{gareId}` are Server Components fetching through
+  `NEXT_PUBLIC_API_BASE_URL` — the *browser's* address, which inside the `web`
+  container points at the container itself. The accueil had a private fix; the
+  resolution now lives in `lib/api.ts` so every server-side fetch gets it.
+  Measured after: all five public routes 200 in the container.
+- **`demo.sh` left the compose simulator running against deleted course ids** —
+  "0 acceptée, 178 rejetée", a map with no trains. It now stops that container,
+  and `MoteurSimulation` drops a moving course after three consecutive absences
+  from `courses-du-jour` instead of never. Measured after: 0 rejected.
+- **`demo.sh` swallowed a failed backfill** (`|| true`), whose symptom is a flat
+  punctuality chart discovered on stage. It now asserts the day count and fails
+  loudly, naming `TRINO_DB_URL`. Both paths exercised.
+- **`demo.sh` polled the wrong port and raced course generation** — it asks
+  `docker compose port api` now, and waits for today's courses to exist rather
+  than for `/actuator/health`.
+- **`CriteresRechercheTest.fenetreResolueEnHeureLocale` could not fail** — it
+  compared two calls built from the same helper. Rewritten to assert the local
+  and UTC windows return disjoint course ids, and confirmed falsifiable.
+- **`sauvegarde.sh` preferred a host `pg_dump` with no `--host`/`--port`**,
+  which on this machine would dump an unrelated PostgreSQL and pass its own
+  completeness check. The container branch is now first.
+- **`/courses` had gained an unconditional departure window.** The non-null
+  default is now ±1 day, provably not a filter.
+- Nine files had been rewritten LF→CRLF, inflating the diffs 5–20×. Restored.
 
 ## Verified
 
-`./mvnw test` **217 green, 0 failures, 0 errors, 0 skipped** (171 after phase 7).
+`./mvnw test` **224 green, 0 failures, 0 skipped** (217 after phase 8).
 `npm run build`, `tsc --noEmit`, `eslint --max-warnings=0` green.
 
 **Run it as `TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino ./mvnw test`.**
 
-Every Acceptance command run live against 8081 with the standing substitutions
-(8080→8081, `jq`→`node`, `psql`→`docker exec`). The phase file is unedited.
+Acceptance run live after `docker compose down -v`:
 
 | Check | Expected | Got |
 |---|---|---|
-| `POST /abonnements` | created | 201, `Set-Cookie: jeton_abonne` HttpOnly |
-| same again | not an error | 200, row updated |
-| `GET /notifications` \| `.total` | ≥ 1 | **56** |
-| Mailpit `.total` | ≥ 1 | **9** |
-| `POST /regles-alerte` (admin) | 201 | 201 |
-| `GET /regles-alerte` (voyageur) | 403 | 403 |
-| *(added)* voyageur + malformed body | 403 not 400 | 403 |
-| ingestion with SMTP dead | < 200 ms | **18–29 ms**, 202 |
-| the row it produced | `ECHEC` + `erreur` | `MailSendException: Mail server connection failed…` |
+| `down -v && up -d` | working stack | 5 services, api healthy before simulateur/web |
+| `/actuator/health` | UP | `{"status":"UP"}`, exit 0 |
+| `localhost:3000` | 200 | 200 |
+| `./mvnw -q test` | exit 0 | exit 0, 224 tests |
+| `bash scripts/demo.sh` | resets and prints subjects | exit 0, course 1201 / gare 1 derived at run time |
+| three new reports export xlsx | 200 | 200 ×3, 3.8–5.5 KB files |
+| `?region=` `?destination=` `?heureDebut=&heureFin=` | `contenu` | exit 0 ×3 — 80 → 32 / 8 / 23 |
+| `scripts/sauvegarde.sh` | restorable dump | 195 KB, completeness verified |
+| public routes at 375 px | no overflow | `/` `/carte` `/trains` `/gares` `/affichage` `/connexion` all clean |
 
-**Two acceptance commands cannot pass as written, and neither is a code defect:**
+## Open — for the supervisor
 
-- `cibleId: 1` — course 1 is a **backfilled 2026-08-04 run, already
-  `TERMINUS_ATTEINT`**. It can never be late again, so that subscription can
-  never produce a notification. Re-run against a course actually circulating
-  today: 56 notifications, 9 emails. Today's course ids start at 1361.
-- The dedup query groups by `(abonnement_id, evenement)` and fails over 3, but
-  one emission writes one row **per channel** and a LIGNE/GARE subscription spans
-  every late course on its target. Grouped on the real key —
-  `(abonnement, evenement, course, canal)` — the **maximum is 2** across 5 383
-  ingested pings, which is the guard working. Supervisor's call whether to
-  loosen the query or tighten the rule.
-
-## Deferred
-
-- **Into phase 9** — a retry or startup sweep for `EN_ATTENTE` notifications
-  (see the deviation table); forced password change on first login; claiming an
-  anonymous subscription at login (out of scope by decision 12); the
-  `/auth/login` and `/ingest/*` rate limits, still declared in `api-contract.md`
-  and unimplemented — `LimiteurDebit` now exists and each is one line in
-  `ConfigurationWeb`.
-- **Raised for the supervisor** — the dedup key bounds messages per *course*, not
-  per *subscriber*. A GARE subscriber received 124 notifications across 62
-  courses in 85 s at x20. That is the spec's key implemented faithfully; whether
-  a per-subscriber cap was intended is a spec question, not a bug.
-- **Still open** — `Dedoublonneur` and `EtatCirculationStore` eviction;
-  `position_course` and `notification` growth; `refresh_token` sweep;
-  `FiltreJwt`/`FiltreCleIngestion` double-registered; `.gitignore` misses `*.log`;
-  `GET /incidents/ouverts` unpaginated by design.
-- **Known and accepted** — an incident edited more than 30 simulated minutes
-  after declaration re-notifies; `?du=` without `?au=` scans unbounded; a ligne
-  whose trace has fewer than two points cannot be renamed; `requeteAuthJson` is
-  duplicated in `incidents.ts` and `tableauBord.ts`.
+- **The gated routes were not walked at 375 px.** `/exploitation/*` and
+  `/admin/*` need a browser login, not performed here. Public routes are clean.
+- **The dedup key bounds messages per course, not per subscriber** — 124
+  notifications across 62 courses in 85 s at x20. Spec question, not a bug;
+  `RAPPORT-NOTES` §5.3.
+- **The three new reports have no UI control**; the dashboard only exports
+  `ponctualite`. Reachable by API. A decision, not an oversight.
 
 ## Standing deviations
 
 | Deviation | Why |
 |---|---|
-| db on **5433**, API on **8081** | Unrelated services own 5432 and 8080 here. |
+| db on **5433**, API on **8081** | Unrelated services own 5432 and 8080 here. Compose publishes `8081:8080`; the container still listens on 8080. |
 | `jq`/`psql` absent; `node` and `docker exec` used | Same URLs, same assertions. |
-| **A notification killed in flight stays `EN_ATTENTE` for ever** | Nothing retries and nothing sweeps at startup. Measured: 344 rows left by a `taskkill /F` of the API, none at all across a clean run. The `ECHEC` path covers an adapter that throws, not a process that dies. |
-| **A second replay needs today's courses reset first** | After one run the day's 80 courses are `TERMINUS_ATTEINT` and the simulator has nothing to move. `docs/RUNBOOK.md` §9 has the reset. |
-| **Mailpit has no volume** | The inbox is meant to be thrown away; restarting the container empties it. |
-| The bell **renders nothing** until you follow something | A bell that cannot ring is chrome. |
-| Only `IN_APP` and `EMAIL` offered in the UI | `SMS` is a stub with no phone number in the model; `AFFICHAGE` is the station board, already delivered. |
-| Notification read state is **client-side** | No `lu` column; a write per glance on a public endpoint is worse. Ids are monotonic. |
-| The **account** subscription path is unreachable from the UI | `EventSource` cannot send `Authorization`, and the portal sends none. Built and tested, not exercised by the browser. |
-| Earlier deviations from phases 2–7 | Unchanged. |
+| **Acceptance runs `./mvnw test` before `demo.sh`** | `AnalytiqueRepositoryTest` (phase 5) requires backfilled history, and `down -v` wipes it. `scripts/backfill.sh` was run between the two, which is what that test's own error message instructs. One line of ordering in the phase file would remove this. |
+| **`demo.sh` run as `--sans-feed` in the acceptance** | The real script ends in `exec` of the simulator and blocks forever, so a scripted run never reaches the later checks. The feed path was verified separately: positions accepted, 0 rejected. |
+| `demo.sh` **cycles the API and stops the compose simulator** | It must delete courses the API holds in memory, and the simulated clock never goes backwards. It restarts the API itself; `docker compose start simulateur` restores real-time flow afterwards. |
+| Legend shows **five colours, not the addendum's six** | The phase-4 ramp has four delay tones plus cancelled; `R5`/`R10` and `R15`/`R30` share one each. Six rows over five colours asserted a distinction the map does not draw. |
+| **`/auth/login` limit is per source IP as the API sees it** | Behind the published port that is the docker bridge gateway, so the 10/min budget is shared. Acceptable locally; a real deployment terminates TLS on a proxy and would key on `X-Forwarded-For`. |
+| `refresh_token` purge deletes **expired only**, not "expired and revoked" | A revoked-but-unexpired row is the only evidence a token was issued then withdrawn. Reasoned in `PurgeJetons`. |
+| Export **PDF**, `DEPART`/`ARRIVEE` events not built | Time. Both in the coverage table. |
+| `CHANGEMENT_QUAI`, editable enums, HTTPS, 99,9 % | Scoped out **with reasons** — `RAPPORT-NOTES` §5. |
+| Earlier deviations from phases 2–8 | Unchanged. |
 
 ## Running now
 
-Postgres `trino-db` on **5433** and `trino-mailpit` on **1025/8025** are up; the
-API, simulator and frontend are stopped. `docs/RUNBOOK.md` has every command to
-bring them back, query the database and re-run these checks by hand.
-
-The database is back to its seeded state: 4 alert rules as V8 wrote them, 0
-subscriptions, 0 notifications, test incidents removed, inbox emptied.
+Full stack up: db (5432/5433), mailpit (1025/8025), api (8081), simulateur, web
+(3000). Database seeded, 14 backfilled days plus today, no load fleet, no
+notifications, no subscriptions. `docs/RUNBOOK.md` §11 has the phase-9 commands.

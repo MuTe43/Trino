@@ -10,7 +10,16 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-async function parseErreur(response: Response): Promise<ErreurApi | undefined> {
+/**
+ * Reads the error envelope out of a failed response, or undefined when the body
+ * is not one.
+ *
+ * Exported since phase 9 for `telechargerExport`, which cannot go through
+ * {@link requeteAuthJson}: it needs the raw `Response` to take a blob from it.
+ * That is the one legitimate reason to duplicate this logic, and exporting it
+ * removes the duplicate rather than blessing it.
+ */
+export async function parseErreur(response: Response): Promise<ErreurApi | undefined> {
   try {
     return (await response.json()) as ErreurApi;
   } catch {

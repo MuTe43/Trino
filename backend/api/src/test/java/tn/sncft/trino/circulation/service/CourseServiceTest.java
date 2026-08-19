@@ -37,13 +37,18 @@ class CourseServiceTest {
     private final CourseService service = new CourseService(
             courseRepository, passageGareRepository, positionCourseRepository, etatStore, calculateurEta);
 
+    /** These tests are about the statut collection; every other criterion stays unset. */
+    private static final CourseService.CriteresRecherche SANS_CRITERE =
+            CourseService.CriteresRecherche.aucun();
+
     @Test
     @DisplayName("un seul statut est transmis tel quel au dépôt")
     void unSeulStatutEstTransmisTelQuel() {
         ArgumentCaptor<Collection<StatutCourse>> captor = captor();
         stubRecherche(captor);
 
-        service.lister(null, null, null, List.of(StatutCourse.RETARDE), null, null, 0, 20);
+        service.lister(null, null, null, List.of(StatutCourse.RETARDE), null, null,
+                SANS_CRITERE, 0, 20);
 
         assertEquals(List.of(StatutCourse.RETARDE), captor.getValue());
     }
@@ -55,7 +60,8 @@ class CourseServiceTest {
         stubRecherche(captor);
 
         service.lister(null, null, null,
-                List.of(StatutCourse.EN_CIRCULATION, StatutCourse.RETARDE), null, null, 0, 20);
+                List.of(StatutCourse.EN_CIRCULATION, StatutCourse.RETARDE), null, null,
+                SANS_CRITERE, 0, 20);
 
         assertEquals(List.of(StatutCourse.EN_CIRCULATION, StatutCourse.RETARDE), captor.getValue());
     }
@@ -66,7 +72,7 @@ class CourseServiceTest {
         ArgumentCaptor<Collection<StatutCourse>> captor = captor();
         stubRecherche(captor);
 
-        service.lister(null, null, null, null, null, null, 0, 20);
+        service.lister(null, null, null, null, null, null, SANS_CRITERE, 0, 20);
 
         assertEquals(StatutCourse.values().length, captor.getValue().size());
         assertTrue(captor.getValue().containsAll(List.of(StatutCourse.values())));
@@ -78,14 +84,15 @@ class CourseServiceTest {
         ArgumentCaptor<Collection<StatutCourse>> captor = captor();
         stubRecherche(captor);
 
-        service.lister(null, null, null, List.of(), null, null, 0, 20);
+        service.lister(null, null, null, List.of(), null, null, SANS_CRITERE, 0, 20);
 
         assertEquals(StatutCourse.values().length, captor.getValue().size());
     }
 
     private void stubRecherche(ArgumentCaptor<Collection<StatutCourse>> captor) {
         Page<tn.sncft.trino.circulation.domaine.Course> vide = new PageImpl<>(List.of());
-        when(courseRepository.rechercher(any(), any(), any(), captor.capture(), any(), any(), any()))
+        when(courseRepository.rechercher(any(), any(), any(), captor.capture(), any(), any(),
+                any(), any(), any(), any(), any()))
                 .thenReturn(vide);
     }
 

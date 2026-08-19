@@ -1,0 +1,26 @@
+# Measurement profile for the phase 9 load test. Not active in a normal run.
+#
+# /actuator/** is permitAll in ConfigurationSecurite -- the health probe has to
+# be reachable by docker compose and by a load balancer, neither of which holds
+# a JWT. Exposing the metrics endpoint therefore exposes it anonymously, which
+# is why it lives behind a profile instead of in application.yml: heap sizes,
+# thread counts and per-URI request counts are a free reconnaissance of the
+# service, and nothing in the product needs them at runtime.
+#
+#   ./mvnw -pl api spring-boot:run \
+#     -Dspring-boot.run.profiles=metrologie -Dspring-boot.run.arguments=--server.port=8081
+#
+# Percentiles are NOT set here. The /actuator/metrics endpoint reports COUNT,
+# TOTAL_TIME and MAX from Meter.measure() and nothing else -- publishPercentiles
+# only surfaces through a registry that exports them, which would mean adding
+# micrometer-registry-prometheus for one number. Ingest latency percentiles are
+# measured producer-side instead, by JournalLatence in the simulator, which is
+# also the more honest vantage point: it is what real AVL hardware would see.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  endpoint:
+    health:
+      show-details: never

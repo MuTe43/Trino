@@ -1,12 +1,21 @@
 "use client";
 
-import { useReducer } from "react";
+import { useEffect, useReducer } from "react";
 import Link from "next/link";
+import { listerDeparts } from "@/lib/api";
 import { useFluxSse } from "@/lib/sse";
 import { reducerDeparts, trierDeparts } from "@/lib/departs";
 import { styleStatut } from "@/lib/couleurs";
 import type { DepartGareDTO } from "@/lib/types";
 import { formaterHeure } from "@/lib/temps";
+
+// Same interval as the kiosk board. A delta is lost whenever the EventSource is
+// reconnecting -- frames carry no id, so there is no replay (see HubSse) -- and
+// without a resync this table stayed wrong until the visitor navigated away and
+// back. The kiosk has had this backstop since phase 4; the public page did not,
+// which meant the screen in the hall and the phone in the visitor's hand could
+// disagree about the same train.
+const RAFRAICHISSEMENT_MS = 60_000;
 
 export interface TableauDepartsGareProps {
   gareId: number;
@@ -16,7 +25,8 @@ export interface TableauDepartsGareProps {
 /**
  * The public station page's departure table: dense, hairline-separated, the
  * light status tokens. Live via `gare:{gareId}` -- a `statut`/`retard` delta
- * patches the one row it names, never a wholesale refetch.
+ * patches the one row it names -- and backstopped by a 60s REST resync for the
+ * deltas that arrive while the stream is reconnecting.
  */
 export function TableauDepartsGare({ gareId, departsInitiaux }: TableauDepartsGareProps) {
   const [etat, dispatch] = useReducer(
@@ -29,6 +39,18 @@ export function TableauDepartsGare({ gareId, departsInitiaux }: TableauDepartsGa
     onStatut: (evenement) => dispatch({ type: "STATUT", gareId, evenement }),
     onRetard: (evenement) => dispatch({ type: "RETARD", gareId, evenement }),
   });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      listerDeparts(gareId)
+        .then((departs) => dispatch({ type: "INIT", departs }))
+        .catch(() => {
+          // Silent, like the kiosk: the table keeps its last known-good rows
+          // rather than emptying itself because one poll did not come back.
+        });
+    }, RAFRAICHISSEMENT_MS);
+    return () => clearInterval(id);
+  }, [gareId]);
 
   const departs = trierDeparts(etat);
 

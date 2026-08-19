@@ -201,3 +201,78 @@ during a soutenance is a subscriber receiving hundreds of messages in a minute.
 At acceleration 1 the two clocks are identical, so nothing about real hardware
 changes. The state is in memory, like `EtatCirculationStore` and for the same
 reason: a restart costs at most one duplicate.
+
+---
+
+## 13. Rétention : ce que l'on garde, et pendant combien de temps (phase 9)
+
+Trois tables ne cessaient de croître et rien ne les balayait. Aucune n'est
+partitionnée — hors périmètre pour une livraison locale — mais chacune a
+maintenant une fenêtre énoncée, ce qui est la moitié qui manquait.
+
+**`refresh_token` : purgé sept jours après expiration.** Chaque connexion depuis
+la phase 1 laissait une ligne que rien ne supprimait. `PurgeJetons` s'exécute à
+03:30, après que `GenerateurCourses` a matérialisé la journée à 03:00, et efface
+les lignes expirées depuis plus longtemps que la durée de vie d'un jeton. Une
+ligne révoquée n'est *pas* supprimée immédiatement : entre la révocation et
+l'expiration, elle est la seule preuve qu'un jeton présenté avait bien été émis
+puis retiré. La supprimer transforme « ce jeton a été révoqué » en « ce jeton n'a
+jamais existé » — la même réponse qu'un jeton forgé, sur la piste d'audit que
+quelqu'un consulte précisément parce qu'il soupçonne la différence.
+
+**`notification` : conservée, mais plus jamais bloquée en `EN_ATTENTE`.** La
+table garde toutes ses lignes — c'est la trace de ce qui a été émis, et son
+volume est proportionnel aux abonnements, pas au flux GPS. Ce qui a changé est
+l'état : `EN_ATTENTE` signifie désormais « en cours de remise à cet instant ».
+`BalayeurNotification` bascule en `ECHEC`, avec une cause écrite, toute ligne
+plus ancienne que le processus qui pourrait la traiter. Mesuré en phase 8 : un
+`taskkill /F` de l'API laissait **344** lignes qu'aucun processus n'aurait jamais
+reprises. Rien ne réessaie : un réessai suppose un canal idempotent et un
+back-off, et une notification de retard ne vaut plus grand-chose quand le réessai
+aboutirait — le train est arrivé. Enregistrer la perte est la moitié honnête, et
+c'est celle qui se construit sans courtier de messages (décision 4).
+
+**`position_course` : croissance non bornée, assumée et chiffrée.** Une course
+émet un ping toutes les cinq secondes. À 320 courses simultanées cela fait
+environ 230 000 lignes par journée de service. La table est l'historique
+append-only que lisent les rapports et la relecture de trace, jamais le chemin
+chaud (`EtatCirculationStore` est en mémoire). Fenêtre recommandée en
+production : **90 jours**, par un `delete` mensuel sur `date_service`, ou une
+partition par mois si le volume le justifie. Non construit ici : une démonstration
+locale ne vit pas assez longtemps pour l'exercer, et un balayage non testé qui
+supprime de l'historique est plus dangereux que son absence.
+
+**L'état chaud est borné par construction, pas par énumération.**
+`EtatCirculationStore` n'était vidé qu'à `TERMINUS_ATTEINT`. Ce n'est pas une
+borne : une course finissant `ANNULE` gardait sa fenêtre, une course laissée en
+`ARRET_EXCEPTIONNEL` aussi, et au basculement de 03:00 toute la veille également.
+`DetecteurSilence` garde désormais l'ensemble vivant et oublie le reste — la
+propriété réellement voulue, qu'aucun nouveau statut ajouté à l'énumération ne
+peut périmer.
+
+---
+
+## 14. Où se termine TLS (phase 9)
+
+Rien n'écoute en HTTPS dans cette livraison, et c'est un choix.
+
+Terminer TLS localement suppose un certificat auto-signé, et la politique de
+cookies de la décision 12 a été réglée pour du HTTP en clair sur `localhost` : le
+jeton d'abonné est posé en `SameSite=Lax` sans `Secure`. Basculer casserait
+silencieusement la cloche de notifications, c'est-à-dire l'étape de démonstration
+qui transforme « nous avons conçu un système de notifications » en « voici le
+courriel ».
+
+La couche applicative est déjà agnostique, et c'est cela qui compte pour le
+rapport. En production, TLS se termine sur un proxy inverse devant l'API et le
+web ; trois valeurs de configuration suivent, aucune ligne de code :
+
+- le proxy pose `X-Forwarded-Proto: https`, que Boot lit pour construire ses URL
+  absolues (`server.forward-headers-strategy=framework`) ;
+- `refreshToken` et `jeton_abonne` passent en `Secure` ;
+- `TRINO_CORS_ORIGINES` reçoit les origines `https://` réelles.
+
+L'application ne construit aucune URL absolue vers elle-même dans ses réponses et
+ne compare jamais un schéma, ce qui est la raison pour laquelle la bascule tient
+en trois réglages plutôt qu'en une relecture.
+

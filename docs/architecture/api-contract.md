@@ -175,8 +175,32 @@ GET /gares/{id}/departs?limite=20        next departures, for the station board
                                          ordered by departEstime, NOT by
                                          departTheorique — a delayed train
                                          must fall down the board
-GET /recherche?q=                        unified: numéro, ligne, gare, destination
+GET /recherche?q=&date=&region=&destination=&heureDebut=&heureFin=&page=&taille=
+                                         unified search, §4.9's seven criteria.
+                                         EVERY parameter is optional, q included:
+                                         a caller filtering on region alone has
+                                         no train number to supply, and requiring
+                                         q made the other criteria unreachable.
+                                         With none given it returns the service
+                                         date's courses, exactly as /courses does.
 ```
+
+Phase 9 added `region` (matched against any gare the course calls at),
+`destination` (matched against the course's LAST `passage_gare` only, so
+"Gabès" finds trains terminating there rather than passing through) and the
+`heureDebut`/`heureFin` window on `departTheorique`.
+
+The window is wall-clock time in `Africa/Tunis`, resolved against the service
+date before it reaches SQL. `depart_theorique` is a `timestamptz` in UTC
+(invariant 6), so binding a bare `time` would compare local hours against UTC
+ones and displace every result by the network's offset.
+
+Both bounds are always bound, defaulting to the start and end of the service
+date — never to null. PostgreSQL cannot infer a type for a parameter that only
+appears in `? is null`, and binding null there answered **500** `could not
+determine data type of parameter` on every call, including calls passing no
+window at all. The substitute bounds filter nothing: the query already restricts
+rows to that `dateService`.
 
 `CourseResumeDTO`:
 ```json
@@ -589,6 +613,24 @@ GET /rapports/incidents?du=&au=              type x gravité, délai moyen de r�
 GET /rapports/{nom}/export?du=&au=&format=csv|xlsx
 ```
 
+`{nom}` is one of five, registered by name in `ServiceExport`:
+
+| nom | Contenu |
+|---|---|
+| `ponctualite` | par jour : passages mesurés, à l'heure, taux, retard moyen |
+| `incidents` | par type x gravité : total, résolus, délai moyen de résolution |
+| `retards-par-ligne` | par ligne : courses, en retard, part, retard moyen et maximum |
+| `retards-par-gare` | par gare : passages, en retard, part, retard moyen et maximum |
+| `disponibilite-trains` | par (train, ligne) : programmées, réalisées, annulées, taux |
+
+`disponibilite-trains` defines availability as the share of scheduled courses
+that were not cancelled. That is the only definition this schema supports
+honestly: a `Train` carries no status and no downtime (invariant 1), so there is
+nothing to read a maintenance window from. The denominator includes cancelled
+runs, which is what makes the ratio mean anything.
+
+An unknown `{nom}` is a 400 `VALIDATION_ECHOUEE` listing the five available.
+
 All of these are `RESPONSABLE_EXPLOITATION` and **only** that role.
 `ADMINISTRATEUR` gets 403: it administers the référentiel, the accounts and the
 connection log, and reading operational analytics is a different duty.
@@ -642,16 +684,30 @@ still downloads and the server logs three ERROR stack traces per export.
 `/auth/login` 10 per minute per IP. `/ingest/*` 120 per minute per key.
 `POST /abonnements` 10 per minute per IP. Simple in-memory bucket, no library.
 
-Only the third is built. `LimiteurDebit` (phase 8) is a fixed-window counter
-registered as a `HandlerInterceptor` on `POST /api/v1/abonnements` — an
-interceptor rather than the controller, because a controller holds no logic
-(invariant 7), and rather than the service, because a service has no business
-knowing a caller's IP.
+**All three are built** since phase 9. `LimiteurDebit` (phase 8) is a
+fixed-window counter, registered three times as a `HandlerInterceptor` in
+`ConfigurationWeb` — interceptors rather than the controllers, because a
+controller holds no logic (invariant 7), and rather than the services, because a
+service has no business knowing a caller's IP.
 
-It was built for `/abonnements` first because that is the only unauthenticated
-endpoint that **sends mail**: without a limit, one loop posts a thousand messages
-to any address the caller names. The two older limits above remain declared and
-unimplemented; wiring them is now one line each in `ConfigurationWeb`.
+`/abonnements` was built first because it is the only unauthenticated endpoint
+that **sends mail**: without a limit, one loop posts a thousand messages to any
+address the caller names. The other two were declared here in phase 0 and stayed
+unimplemented for eight phases, which is worse than not declaring them — a
+contract stating a limit nobody enforces tells an integrator they are protected
+when they are not.
+
+Each is keyed on what actually identifies the abuser:
+
+- `/ingest/*` per **ingest key**, not per IP — several GPS boxes behind one NAT
+  would otherwise share a budget. The key is hashed before it becomes a map key,
+  because that string is held in memory and named in any heap dump. A request
+  with no key at all is not counted: `FiltreCleIngestion` rejects it, and
+  counting it would let an unauthenticated caller consume a real producer's
+  allowance.
+- `/auth/login` per **IP**, not per submitted email — credential stuffing tries
+  many accounts from one place, and keying on the email would give every guessed
+  address its own fresh budget.
 
 Fixed window rather than sliding or a token bucket: the difference between 10 per
 minute and up to 20 across a window boundary does not change whether the endpoint

@@ -89,6 +89,13 @@ public class DetecteurSilence {
         OffsetDateTime maintenant = horloge.maintenant();
 
         List<Course> courses = courseRepository.findDuJourSaufStatuts(jour, STATUTS_CLOS);
+
+        // Before the early return, not after: an empty live set is exactly the
+        // case where everything in hot state is stale -- the day is over, or the
+        // 03:00 rollover has just happened -- and returning first would make the
+        // sweep skip the one moment it has the most to do.
+        evincerEtatsObsoletes(courses);
+
         if (courses.isEmpty()) {
             return;
         }
@@ -117,6 +124,33 @@ public class DetecteurSilence {
         // and revised estimates flush on commit without an explicit save.
     }
 
+    /**
+     * Drops hot state for every course that is no longer a live run of today.
+     *
+     * <p>{@code EtatCirculationStore} used to be emptied only when a course
+     * reached TERMINUS_ATTEINT. That is not a bound: a run ending ANNULE kept
+     * its window, a run left in ARRET_EXCEPTIONNEL kept its window, and at the
+     * 03:00 rollover the whole of yesterday kept its window -- so a process left
+     * up for a week held seven days of fixes for courses nobody could ask about.
+     *
+     * <p>Expressed as "keep the live set, forget the rest" rather than as a list
+     * of statuses to evict on, because that is the property actually wanted and
+     * it cannot be made stale by a new status being added to the enum.
+     */
+    private void evincerEtatsObsoletes(List<Course> vivantes) {
+        Set<Long> idsVivants = vivantes.stream().map(Course::getId).collect(Collectors.toSet());
+        int evinces = 0;
+        for (Long courseId : etatStore.coursesConnues()) {
+            if (!idsVivants.contains(courseId)) {
+                etatStore.oublier(courseId);
+                evinces++;
+            }
+        }
+        if (evinces > 0) {
+            log.debug("Balayage : {} état(s) de circulation évincé(s).", evinces);
+        }
+    }
+
     /** @return whether the status changed */
     private boolean traiter(Course course, List<PassageGare> passages, OffsetDateTime maintenant) {
         Optional<StatutCourse> change = machineEtatCourse.evaluer(course, passages, maintenant);
@@ -138,7 +172,11 @@ public class DetecteurSilence {
 
         change.ifPresent(statut -> {
             diffuseur.statut(course, passages, statut);
-            if (statut == StatutCourse.TERMINUS_ATTEINT) {
+            // Every terminal status, not only TERMINUS_ATTEINT: a cancelled run
+            // is just as over, and leaving its window in place kept a train on
+            // the map that had been called off. The sweep above is the backstop;
+            // this is what makes it prompt.
+            if (MachineEtatCourse.TERMINAUX.contains(statut)) {
                 etatStore.oublier(course.getId());
             }
         });

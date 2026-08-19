@@ -620,6 +620,80 @@ existé. Vérifié en pointant SMTP vers un port fermé : l'ingestion continue d
 répondre en quelques dizaines de millisecondes, et la ligne en échec porte le
 message du serveur de messagerie.
 
+### Phase 9 — couverture, durcissement et démonstration
+
+**La revendication la plus faible du projet, transformée en mesure.** Le cahier
+des charges demande *plusieurs centaines de trains simultanément* ; le jeu de
+données matérialise 80 courses par jour. L'architecture devait tenir — 300 trains
+à un tick de 5 s font 60 messages par seconde — mais c'était un raisonnement, pas
+un chiffre. `scripts/charge.sh` ajoute 320 trains dont les départs tiennent dans
+une fenêtre de 20 minutes, plus courte que la plus brève desserte du réseau (35
+min), si bien que tous circulent en même temps. Les chiffres relevés sont au §5.2.
+
+Le profil de charge n'est **pas** une migration Flyway. Une migration est
+immuable et s'applique partout : une flotte qui existe pour être mesurée puis
+supprimée ne doit jamais atteindre une base de démonstration.
+
+**Une horloge qui ne recule jamais, et la panne que cela provoque.** Redémarrer
+le simulateur sans redémarrer l'API fait passer *toutes* les courses en
+`ARRET_EXCEPTIONNEL`. `HorlogeCirculation` est monotone — c'est le bon choix, une
+horloge de terrain ne revient pas en arrière — mais le simulateur accéléré
+repart de `heure-debut`, donc chaque ping arrive horodaté plusieurs heures avant
+ce que l'API a déjà observé, et `DetecteurSilence` conclut au silence. Mesuré :
+211 courses basculées en une minute. Ce n'est pas un défaut du produit ; c'est un
+piège de démonstration, et l'étape 8 (« tuer le simulateur ») mène droit dessus.
+`scripts/demo.sh` refuse maintenant de s'exécuter si l'API répond.
+
+**Un paramètre nul dont PostgreSQL ne peut pas deviner le type.** Les quatre
+critères de recherche ajoutés au §4.9 ont d'abord été écrits sur le patron
+existant, `(:param is null or colonne = :param)`. Pour les deux bornes horaires —
+des `timestamptz` — PostgreSQL répond `could not determine data type of parameter
+$23` et **toute** requête `/recherche` retourne 500, y compris celles qui ne
+passent aucune borne. La phase 6 avait rencontré exactement la même erreur sur
+`$7` dans les filtres du référentiel. Deux fois la même faute, invisible au
+compilateur et à tout test sur simulacre. Corrigé en liant toujours une fenêtre
+réelle, par défaut les bornes de la journée de service — que le prédicat
+`dateService` a déjà restreintes. `CriteresRechercheTest` exécute désormais chaque
+critère contre une vraie base.
+
+**Le piège documenté dans lequel je suis tombé.** `LimiteurDebit` porte un
+commentaire expliquant qu'un `WebMvcConfigurer` ayant besoin d'un collaborateur
+fait échouer le contexte de chaque tranche `@WebMvcTest`. En ajoutant les deux
+`FilterRegistrationBean` à `ConfigurationWeb`, j'ai fait exactement cela : 15
+tests en erreur, aucun lié à la configuration web. Les déclarations sont
+maintenant dans `ConfigurationSecurite`, à côté des filtres qu'elles corrigent.
+
+**Deux implémentations de géométrie, épinglées sans être couplées.**
+`GeometrieLigne` (api) et `GeometrieCourse` (simulateur) sont dupliquées
+volontairement : le contrat HTTP est le seul couplage autorisé (invariant 3). Rien
+n'empêchait pourtant les deux copies de diverger, et la panne se présente comme
+des trains dessinés à côté de la voie, chaque chiffre cohérent avec lui-même et
+aucune trace nulle part. Un fichier partagé, `backend/parite-geometrie.json`,
+fixe 15 chaînages de la ligne 4 réelle ; chaque module vérifie sa propre
+implémentation contre les mêmes nombres. Aucun module ne dépend de l'autre. Les
+deux concordent à 1e-7, soit environ un centimètre.
+
+**Une adresse d'API qui ne peut pas être la même des deux côtés.** L'accueil est
+un Server Component : il résout la course et la gare de ses trois liens *dans le
+conteneur web*. `NEXT_PUBLIC_API_BASE_URL` y vaut `http://localhost:8081` —
+l'adresse du **navigateur**, et depuis le conteneur c'est le conteneur lui-même,
+où rien n'écoute. Les deux côtés ont réellement besoin d'adresses différentes.
+`TRINO_API_BASE_URL_SERVEUR` porte celle du serveur et retombe sur l'autre, ce
+qui laisse `npm run dev` inchangé. La panne est silencieuse : la page se rend
+entièrement et perd seulement ses trois liens, parce que `lib/serveur.ts` dégrade
+au lieu de lever. Trouvée en vérifiant l'image conteneurisée plutôt que le seul
+serveur de développement — la version `dev` fonctionnait parfaitement.
+
+**Une légende à cinq couleurs, pas à six.** L'addendum demande six pastilles
+distinctes. La rampe fixée en phase 4 en compte quatre pour le retard plus
+l'annulation : `R5`/`R10` partagent un ton, `R15`/`R30` aussi. Rendre six lignes
+sur cinq couleurs produit deux paires identiques en pastille *et* en libellé,
+qui affirment une distinction que la carte ne trace pas. La légende répond à la
+question « que veut dire cette couleur » : il y a donc exactement une ligne par
+couleur, et l'intervalle nomme toute la bande couverte. Inventer deux couleurs
+aurait signifié une seconde table de couleurs — précisément ce que l'invariant 8
+interdit.
+
 ---
 
 ## 4. Ce qui n'a pas été construit, et pourquoi
@@ -635,3 +709,147 @@ message du serveur de messagerie.
 
 Chaque ligne est une décision de périmètre, pas un oubli. C'est la différence
 que le jury regardera.
+
+
+---
+
+## 5. Couverture du cahier des charges
+
+Le tableau ci-dessous est le livrable final de la phase 9. Il liste chaque
+exigence du cahier des charges avec son état : **livré**, **partiel** ou **hors
+périmètre**, et pour les deux derniers la raison. Rien n'y est une surprise —
+chaque ligne « partiel » ou « hors périmètre » est développée ailleurs dans ce
+document.
+
+Les numéros de section renvoient au cahier des charges d'origine.
+
+### 5.1 Fonctionnel
+
+| § | Exigence | État | Précision |
+|---|---|---|---|
+| 4.1 | Référentiel gares, lignes, trains, dessertes | **Livré** | CRUD complet, console d'administration, 39 gares et 5 lignes réelles |
+| 4.2 | Plan de transport (horaires, courses datées) | **Livré** | `horaire` matérialisé en 80 courses et 683 passages par jour |
+| 4.3 | Réception des positions GPS | **Livré** | `POST /ingest/positions`, authentifié par clé, simulateur remplaçable par du matériel AVL |
+| 4.4 | Calcul du retard et propagation aval | **Livré** | `retard = réelle − théorique`, jamais d'heure théorique codée en dur |
+| 4.5 | Trois heures : prévue, estimée, réelle | **Livré** | Visibles sur `ListeArrets` — heure prévue barrée, estimée à côté, réelle une fois franchie |
+| 4.6 | Carte temps réel du réseau | **Livré** | MapLibre, interpolation sur la polyligne, une connexion SSE multiplexée |
+| 4.7 | Tableau d'affichage en gare | **Livré** | `/affichage/{gareId}`, conçu pour un écran, resynchronisation REST toutes les 60 s |
+| 4.8 | Sept évènements de notification | **Partiel** | 4 sur 7 : `RETARD_SEUIL`, `COURSE_ANNULEE`, `INCIDENT_DECLARE`, `INCIDENT_RESOLU`. `DEPART` et `ARRIVEE` non construits (temps). `CHANGEMENT_QUAI` **hors périmètre** : `quai` est dérivé de façon déterministe à la génération et ne change jamais, donc aucun changement de quai n'existe à notifier — l'émettre demanderait de rendre `quai` mutable et de donner à un agent l'action de le changer, c'est-à-dire une fonctionnalité, pas une logique d'émission |
+| 4.9 | Sept critères de recherche | **Livré** | Texte libre (numéro, nom, ligne, gare), ligne, gare, date, **région**, **destination**, **fenêtre horaire** — les quatre derniers ajoutés en phase 9 |
+| 4.10 | Gestion des incidents | **Livré** | Déclaration, modification, résolution, diffusion vers la carte publique, rôles séparés |
+| 4.11 | Six rapports exportables | **Partiel** | 5 sur 6 : `ponctualite`, `incidents`, `retards-par-ligne`, `retards-par-gare`, `disponibilite-trains`, en CSV et XLSX. **Export PDF non construit** : demande une dépendance et un gabarit, pour une valeur inférieure à celle des cinq rapports ci-dessus, que CSV et XLSX couvrent déjà pour l'usage analytique |
+| 4.12 | Tableaux de bord d'exploitation | **Livré** | KPI du jour, ponctualité, heatmap, histogramme des retards, rapport incidents |
+| 4.13 | Comptes, rôles et journal de connexions | **Livré** | Quatre rôles, double garde URL + `@PreAuthorize` (invariant 9), journal consultable |
+| — | Types de trains, causes de retard, rôles configurables | **Hors périmètre, assumé** | Ce sont des énumérations Java, et c'est la bonne conception : ce sont des vocabulaires de domaine fermés, pas des réglages. Un nouveau type de train implique de nouvelles règles métier, une nouvelle cause de retard une nouvelle correspondance depuis les types d'incident, un nouveau rôle de nouvelles règles d'autorisation — rien de tout cela ne se fournit par une ligne de base. En faire des données échangerait une garantie à la compilation contre une panne à l'exécution |
+
+### 5.2 Non fonctionnel (§6)
+
+| Exigence | État | Précision |
+|---|---|---|
+| Plusieurs centaines de trains simultanément | **Livré et mesuré** | 321 courses simultanées, chiffres au §6 |
+| Sauvegarde automatique | **Livré** | `scripts/sauvegarde.sh` : `pg_dump` daté, compressé, vérifié complet, rétention par nombre, ligne `cron` dans le `README` |
+| Démarrage en une commande | **Livré** | `docker compose up` — base, Mailpit, API, simulateur, web, ordonnés par sondes de santé. Vérifié après `down -v` |
+| Disponibilité 24h/24 à 99,9 % | **Hors périmètre, assumé** | Non mesurable sur une livraison locale. Ce qui existe : couche applicative sans état, sondes `health`/`readiness`, dégradation maîtrisée quand le flux s'arrête, et désormais une sauvegarde. L'écart est énoncé, pas masqué (décision 8) |
+| HTTPS | **Hors périmètre, assumé** | Terminer TLS en démonstration locale suppose un certificat auto-signé, et la politique de cookies a été réglée pour du HTTP en clair sur `localhost` (décision 12) : basculer casserait silencieusement la cloche de notifications. La couche applicative est déjà agnostique — en production TLS se termine sur un proxy inverse, qui pose `X-Forwarded-Proto`, et les cookies passent en `Secure`. Documenté dans le `README` |
+
+### 5.3 Trois constats énoncés plutôt que corrigés
+
+**Un abonné LIGNE ou GARE reçoit une notification par course en retard.** Mesuré :
+124 messages sur 62 courses en 85 secondes au facteur 20. C'est la clé de
+dé-duplication spécifiée, appliquée fidèlement — la borne est par course, pas par
+abonné — et dans une gare chargée c'est aussi une image honnête de la journée. Ce
+n'est pas un risque de démonstration : le portail ne propose que « Suivre ce
+train », les abonnements LIGNE et GARE existent à l'API et n'ont aucun bouton. La
+réponse à l'échelle réelle est un résumé périodique, pas une borne plus serrée.
+
+**Le chemin d'abonnement par compte est inatteignable depuis le navigateur.**
+`EventSource` ne peut pas envoyer d'en-tête `Authorization`, donc le portail
+n'authentifie jamais son flux et tout abonnement pris depuis l'interface est
+anonyme. La branche `utilisateur_id` est construite et testée, mais aucun humain
+ne l'exerce. Le correctif est un jeton dans un cookie que le point de terminaison
+de flux lit — exactement ce que fait déjà le chemin anonyme. C'est une note de
+conception, pas un défaut.
+
+**Le changement de mot de passe à la première connexion n'est pas imposé.** Il
+attraperait les quatre comptes de démonstration et risquerait de casser le chemin
+de connexion le jour de la soutenance. Consigné comme travail futur.
+
+---
+
+## 6. Le test de charge
+
+C'était la revendication la plus faible du projet : le cahier des charges (§6)
+demande *plusieurs centaines de trains simultanément*, le jeu de données en
+matérialise 80 par jour, et l'argument « 300 trains à un tick de 5 s font 60
+messages par seconde, la diffusion coûte plus que l'ingestion » restait un
+raisonnement. Voici les chiffres.
+
+### 6.1 Protocole
+
+`scripts/charge.sh` ajoute 320 trains, un créneau horaire chacun, départs
+répartis sur 20 minutes à partir de 05:00. Vingt minutes parce que la plus brève
+desserte du réseau dure 35 minutes : toute la flotte est encore en course quand
+la dernière part. Le script n'écrit que des lignes `train` et `horaire` —
+`GenerateurCourses` les transforme en courses et en passages exactement comme
+pour l'horaire du jeu de données, parce qu'un profil de charge qui fabriquerait
+ses propres courses mesurerait un chemin de code que le produit n'emprunte pas.
+
+Simulateur à l'accélération 5, tick de 5 secondes. L'accélération ne change pas
+le débit — le tick est en temps réel — seulement la durée du plateau.
+
+Fenêtre de mesure : 300 secondes, centrée sur le pic, machine par ailleurs au
+repos. Un premier relevé a été jeté parce que des compilations Maven tournaient
+en parallèle et gonflaient le p95 d'un facteur trois ; un chiffre contaminé par
+son propre banc n'est pas un chiffre.
+
+### 6.2 Résultats
+
+| Mesure | Valeur |
+|---|---|
+| Courses simultanées | **320** en continu, 321 au pic |
+| Positions par tick | 320, aucune rejetée |
+| Débit d'ingestion | 64 positions/seconde |
+| **Latence d'ingestion** (lot de 320, vue producteur) | **p50 223 ms · p95 427 ms · p99 573 ms** |
+| Marge sur le tick de 5 s | **facteur ~22** au p50, ~12 au p95 |
+| **Étalement de la diffusion SSE** (première à dernière trame d'un tick) | **p50 18 ms · p95 42 ms · max 89 ms** |
+| Trames reçues sur 300 s, un client, cinq canaux | 17 681 |
+| `tableau-bord/kpi` | p50 10 ms · p95 72 ms |
+| `tableau-bord/retards-par-ligne` | p50 9 ms · p95 12 ms |
+| `tableau-bord/heatmap` (7 jours) | p50 15 ms · p95 16 ms |
+| `tableau-bord/distribution-retards` (7 jours) | p50 11 ms · p95 14 ms |
+| Mémoire JVM utilisée | 183 à 240 Mio |
+| RSS du conteneur API | 585 Mio |
+
+La latence d'ingestion est mesurée côté producteur, dans le simulateur
+(`JournalLatence`), et non par une sonde serveur. C'est le point de vue qui
+compte : c'est ce que du matériel AVL réel subirait, réseau et sérialisation
+compris. Elle englobe aussi la diffusion SSE, que `PublicationApresCommit`
+exécute sur le fil de la requête.
+
+### 6.3 Ce que les chiffres disent
+
+**L'architecture tient, avec de la marge.** Un lot de 320 positions coûte 223 ms
+au p50 contre un budget de 5 000 ms — le facteur 22 est la réponse à la question
+posée. Rapporté à l'unité, une position coûte environ 0,7 ms, délai de retard,
+machine à états, écriture et diffusion compris.
+
+**La diffusion n'était pas le goulot d'étranglement attendu.** L'argument
+initial supposait que le fan-out dominerait ; l'étalement mesuré est de 18 ms au
+p50 pour 320 trames vers un client abonné aux cinq lignes. Avec plusieurs
+dizaines de clients ce poste croîtrait linéairement et redeviendrait le sujet —
+mais à l'échelle demandée il ne l'est pas.
+
+**Les requêtes de tableau de bord ne se dégradent pas sous charge.** Elles lisent
+des lignes commitées, dont le nombre dépend de la journée et non du nombre de
+trains en mouvement ; sous 320 courses simultanées elles restent toutes sous 20 ms
+au p50. Le p95 de `kpi` à 72 ms est le seul point qui bouge, et il s'agit de la
+contention sur le pool de connexions au moment d'un tick.
+
+**Aucune position rejetée sur toute la fenêtre.** 0 rejet sur les 17 681 trames
+observées et les lots correspondants.
+
+Un point d'honnêteté : 320 trains sur un réseau dont le jeu de données compte
+cinq lignes et 39 gares est une densité irréaliste. La mesure porte sur le coût
+de traitement d'un ping et sur la diffusion, pas sur la plausibilité du plan de
+transport.
+

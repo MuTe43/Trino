@@ -37,5 +37,84 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 9: the whole stack in one command. `docker compose up` on a clean
+  # machine has to produce a working demo, so the ordering below is expressed as
+  # healthchecks rather than as depends_on alone -- a container that has started
+  # is not a container that is ready, and both of these fail badly against a
+  # dependency that is merely running.
+  api:
+    build:
+      context: ./backend
+      args:
+        MODULE: api
+    container_name: trino-api
+    depends_on:
+      db:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/trino
+      TRINO_SMTP_HOST: mailpit
+      TRINO_SMTP_PORT: 1025
+      # The browser reaches the frontend on the published port, so that is the
+      # origin the API must allow -- not the compose service name.
+      TRINO_CORS_ORIGINES: http://localhost:3000
+      TRINO_INGEST_KEY: dev-key
+    # 8081 on the host because an unrelated service owns 8080 on the machine
+    # this is demonstrated from. The container still listens on 8080, so nothing
+    # inside the compose network or in application.yml knows about this.
+    ports:
+      - "8081:8080"
+    healthcheck:
+      # No curl in the JRE image. Boot's own actuator is the readiness signal,
+      # and a bare TCP check would report UP while Flyway was still migrating.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  simulateur:
+    build:
+      context: ./backend
+      args:
+        MODULE: simulateur
+    container_name: trino-simulateur
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # The service name here, not localhost: this one is a container talking to
+      # another container, and it is the only process in the stack that is.
+      TRINO_API_BASE_URL: http://api:8080
+      TRINO_INGEST_KEY: dev-key
+      TRINO_SIM_ACCELERATION: "1.0"
+    # No ports. It produces positions and listens for nothing.
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8081
+    container_name: trino-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # The accueil is a Server Component: it resolves the course and the gare
+      # its links point at inside this container, where `localhost:8081` is this
+      # container and nothing answers. The browser still uses the published port
+      # (baked into the bundle as NEXT_PUBLIC_API_BASE_URL at build time) -- the
+      # two sides genuinely need different addresses, which is why this variable
+      # exists and why it carries no NEXT_PUBLIC_ prefix.
+      #
+      # Getting it wrong is quiet: the page renders in full and simply drops the
+      # three links, because lib/serveur.ts degrades rather than throwing.
+      TRINO_API_BASE_URL_SERVEUR: http://api:8080
+    ports:
+      - "3000:3000"
+
 volumes:
   trino-db-data:

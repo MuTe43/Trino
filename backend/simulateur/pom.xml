@@ -39,6 +39,18 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-json</artifactId>
         </dependency>
+        <!--
+          Test scope only, added in phase 9 so this module can carry the geometry
+          parity assertion. It is NOT a dependency on the api module and must not
+          become one: GeometrieCourse duplicates GeometrieLigne on purpose
+          (invariant 3), and the two are pinned to a shared JSON fixture at
+          backend/parite-geometrie.json rather than to each other.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

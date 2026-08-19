@@ -32,6 +32,16 @@ export function EntetePublique() {
 
       <ClocheNotifications />
 
+      {/* The map moved to /carte in phase 9, when / became the accueil. Hidden
+          below sm: at 375 px the bar already carries a wordmark, a search field
+          and the bell, and the accueil links to the map twice anyway. */}
+      <Link
+        href="/carte"
+        className="hidden shrink-0 text-sm text-ardoise-400 underline decoration-filet underline-offset-2 hover:text-ardoise-700 sm:inline"
+      >
+        Carte plein écran
+      </Link>
+
       <Link
         href="/connexion"
         className="shrink-0 text-xs text-ardoise-400 underline decoration-filet underline-offset-2 hover:text-ardoise-700 sm:text-sm"

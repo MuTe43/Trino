@@ -237,7 +237,9 @@ public class IngestionService {
             }
             change.ifPresent(statut -> {
                 diffuseur.statut(course, passages, statut);
-                if (statut == StatutCourse.TERMINUS_ATTEINT) {
+                // Every terminal status, not only TERMINUS_ATTEINT -- see the
+                // same call in DetecteurSilence.
+                if (MachineEtatCourse.TERMINAUX.contains(statut)) {
                     etatStore.oublier(course.getId());
                 }
             });

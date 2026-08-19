@@ -3,9 +3,11 @@ package tn.sncft.trino.analytique.repository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import tn.sncft.trino.analytique.dto.CaseHeatmapDTO;
+import tn.sncft.trino.analytique.dto.DisponibiliteTrainDTO;
 import tn.sncft.trino.analytique.dto.Granularite;
 import tn.sncft.trino.analytique.dto.PointPonctualiteDTO;
 import tn.sncft.trino.analytique.dto.LigneIncidentsDTO;
+import tn.sncft.trino.analytique.dto.RetardParGareDTO;
 import tn.sncft.trino.analytique.dto.RetardParLigneDTO;
 import tn.sncft.trino.exploitation.domaine.Gravite;
 import tn.sncft.trino.exploitation.domaine.TypeIncident;
@@ -174,6 +176,127 @@ public class AnalytiqueRepository {
                 rs.getLong("en_retard"),
                 rs.getDouble("retard_moyen"),
                 rs.getInt("retard_max")), SEUIL_RETARD_MIN, date);
+    }
+
+    /**
+     * The same profile over a range, for the {@code retards-par-ligne} report.
+     *
+     * <p>A separate method rather than a nullable second date on the dashboard
+     * query: the dashboard asks about one service date and the report asks about
+     * a window, and collapsing them would put a branch in the middle of an
+     * aggregate that both of them read.
+     */
+    public List<RetardParLigneDTO> retardsParLigne(LocalDate du, LocalDate au) {
+        String sql = """
+                select l.id                                                            as ligne_id,
+                       l.nom                                                           as ligne_nom,
+                       count(*) filter (where c.statut <> 'ANNULE')                    as courses,
+                       count(*) filter (where c.statut <> 'ANNULE'
+                                          and c.retard_min >= ?)                       as en_retard,
+                       coalesce(avg(c.retard_min) filter
+                                (where c.statut <> 'ANNULE' and c.retard_min > 0), 0)  as retard_moyen,
+                       coalesce(max(c.retard_min) filter (where c.statut <> 'ANNULE'), 0) as retard_max
+                from course c
+                  join ligne l on l.id = c.ligne_id
+                where c.date_service between ? and ?
+                group by l.id, l.nom
+                order by l.nom
+                """;
+        return jdbcTemplate.query(sql, (rs, ligne) -> new RetardParLigneDTO(
+                rs.getLong("ligne_id"),
+                rs.getString("ligne_nom"),
+                rs.getLong("courses"),
+                rs.getLong("en_retard"),
+                rs.getDouble("retard_moyen"),
+                rs.getInt("retard_max")), SEUIL_RETARD_MIN, du, au);
+    }
+
+    /**
+     * Delay by gare over a range: the heatmap aggregate without the hour
+     * dimension.
+     *
+     * <p>Carries the same two filters as the heatmap and for the same reasons.
+     * {@code arrivee_reelle is not null} keeps stops the train has not reached
+     * out of the average -- they hold {@code retard_min = 0} and would score the
+     * untravelled rest of the day as on time. {@code arrivee_theorique is not
+     * null} drops an origin, which has a departure but no arrival, and whose
+     * delay is therefore not a measurement of this station's punctuality.
+     *
+     * <p>Ordered worst first: the reason to open this report is to find out
+     * which stations are the problem, and a report sorted alphabetically makes
+     * the reader do that work in the spreadsheet.
+     */
+    public List<RetardParGareDTO> retardsParGare(LocalDate du, LocalDate au) {
+        String sql = """
+                select g.id                                          as gare_id,
+                       g.nom                                         as gare_nom,
+                       g.region                                      as region,
+                       count(*)                                      as passages,
+                       count(*) filter (where pg.retard_min >= ?)    as en_retard,
+                       coalesce(avg(pg.retard_min), 0)               as retard_moyen,
+                       coalesce(max(pg.retard_min), 0)               as retard_max
+                from passage_gare pg
+                  join course c on c.id = pg.course_id
+                  join gare g   on g.id = pg.gare_id
+                where c.date_service between ? and ?
+                  and pg.arrivee_theorique is not null
+                  and pg.arrivee_reelle is not null
+                group by g.id, g.nom, g.region
+                order by coalesce(avg(pg.retard_min), 0) desc, g.nom
+                """;
+        return jdbcTemplate.query(sql, (rs, ligne) -> new RetardParGareDTO(
+                rs.getLong("gare_id"),
+                rs.getString("gare_nom"),
+                rs.getString("region"),
+                rs.getLong("passages"),
+                rs.getLong("en_retard"),
+                rs.getDouble("retard_moyen"),
+                rs.getInt("retard_max")), SEUIL_RETARD_MIN, du, au);
+    }
+
+    /**
+     * Share of each train's scheduled courses that actually ran, per ligne, over
+     * a range.
+     *
+     * <p>Computed entirely from {@code course} because that is the only place
+     * the information exists: a {@code Train} carries no status and no downtime
+     * (invariant 1), so "availability" can only mean "its programme ran". The
+     * denominator is every course scheduled for the train in the window,
+     * cancelled ones included -- which is what makes the ratio mean anything.
+     *
+     * <p>Ordered worst first, then by train, so the trains that lost runs are at
+     * the top of the export rather than scattered through it.
+     */
+    public List<DisponibiliteTrainDTO> disponibiliteTrains(LocalDate du, LocalDate au) {
+        String sql = """
+                select t.numero                                     as numero,
+                       t.nom                                        as nom,
+                       l.nom                                        as ligne_nom,
+                       count(*)                                     as programmees,
+                       count(*) filter (where c.statut <> 'ANNULE') as realisees,
+                       count(*) filter (where c.statut =  'ANNULE') as annulees
+                from course c
+                  join train t on t.id = c.train_id
+                  join ligne l on l.id = c.ligne_id
+                where c.date_service between ? and ?
+                group by t.id, t.numero, t.nom, l.id, l.nom
+                order by count(*) filter (where c.statut = 'ANNULE') desc, t.numero, l.nom
+                """;
+        return jdbcTemplate.query(sql, (rs, ligne) -> {
+            long programmees = rs.getLong("programmees");
+            long realisees = rs.getLong("realisees");
+            return new DisponibiliteTrainDTO(
+                    rs.getString("numero"),
+                    rs.getString("nom"),
+                    rs.getString("ligne_nom"),
+                    programmees,
+                    realisees,
+                    rs.getLong("annulees"),
+                    // group by guarantees at least one row, so this cannot divide
+                    // by zero -- but the guard states that rather than leaving the
+                    // reader to reconstruct it.
+                    programmees == 0 ? 0 : (double) realisees / programmees);
+        }, du, au);
     }
 
     public List<CaseHeatmapDTO> heatmap(LocalDate du, LocalDate au) {

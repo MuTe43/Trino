@@ -10,13 +10,34 @@ import type {
   StatutCourse,
 } from "./types";
 
-// Base URL of the Spring Boot API. Defaults to local dev; override with
-// NEXT_PUBLIC_API_BASE_URL in production/staging environments. Exported so
-// src/lib/auth.ts (and any other module that talks to the API outside the
-// apiGet/apiPost helpers) shares the exact same source instead of each
-// reading process.env on its own and risking the two drifting apart.
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
+// Base URL of the Spring Boot API. Exported so src/lib/auth.ts (and any other
+// module that talks to the API outside the apiGet/apiPost helpers) shares the
+// exact same source instead of each reading process.env on its own.
+//
+// TWO addresses, because the same code runs on two sides of a network boundary
+// and there is no single value that is correct for both.
+//
+// NEXT_PUBLIC_API_BASE_URL is the address the BROWSER uses. Under docker compose
+// that is a published host port, http://localhost:8081. A Server Component runs
+// inside the `web` container, where `localhost` is the container itself and
+// nothing answers on 8081 — so every server-rendered page that fetched through
+// this constant returned 500 while `/` and `/carte` were fine. Measured on the
+// containerised stack: /trains/{id}, /gares/{id} and /affichage/{gareId} all
+// 500, with `Impossible de joindre l'API (http://localhost:8081/...)` in the
+// container log and nothing at all in the browser console.
+//
+// TRINO_API_BASE_URL_SERVEUR carries the server-side address (http://api:8080 in
+// compose). No NEXT_PUBLIC_ prefix, so it is never inlined into the client
+// bundle; the `typeof window` branch makes the whole lookup dead code there.
+// It falls back to the public value, which is what keeps `npm run dev` — where
+// both sides really are the same host — working unchanged.
+const SUR_LE_SERVEUR = typeof window === "undefined";
+
+export const API_BASE_URL = SUR_LE_SERVEUR
+  ? (process.env.TRINO_API_BASE_URL_SERVEUR
+    ?? process.env.NEXT_PUBLIC_API_BASE_URL
+    ?? "http://localhost:8080")
+  : (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080");
 
 /** Raised when the API responds with a non-OK status. Carries the parsed
  * error envelope (see ApiExceptionHandler) when the body could be parsed. */

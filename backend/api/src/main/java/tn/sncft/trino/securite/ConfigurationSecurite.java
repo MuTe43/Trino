@@ -1,8 +1,10 @@
 package tn.sncft.trino.securite;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -69,6 +71,41 @@ public class ConfigurationSecurite {
     @Bean
     public FiltreCleIngestion filtreCleIngestion(@Value("${trino.ingestion.cle}") String cleIngestion) {
         return new FiltreCleIngestion(cleIngestion, objectMapper);
+    }
+
+    /**
+     * Keeps the two filters above out of the servlet container's own chain.
+     *
+     * <p>They are {@code @Bean}s of type {@code Filter}, and Boot auto-registers
+     * any such bean with the container. Spring Security also places them in its
+     * chain -- which is where {@link #chaineFiltres} puts them, at a position it
+     * controls -- so since phase 1 every request has run both filters twice, and
+     * the container copy has run on paths the security chain never sees,
+     * {@code /error} among them.
+     *
+     * <p>Both extend {@code OncePerRequestFilter}, so the second pass was a
+     * wasted JWT parse rather than a wrong answer. That is precisely why it
+     * survived eight phases: nothing about the responses looked different.
+     *
+     * <p>Declared here rather than in {@code ConfigurationWeb}, next to the beans
+     * they correct and away from the {@code WebMvcConfigurer} that every
+     * {@code @WebMvcTest} slice loads.
+     */
+    @Bean
+    public FilterRegistrationBean<FiltreJwt> enregistrementFiltreJwt(FiltreJwt filtreJwt) {
+        return sansEnregistrementAutomatique(filtreJwt);
+    }
+
+    @Bean
+    public FilterRegistrationBean<FiltreCleIngestion> enregistrementFiltreCleIngestion(
+            FiltreCleIngestion filtreCleIngestion) {
+        return sansEnregistrementAutomatique(filtreCleIngestion);
+    }
+
+    private static <T extends Filter> FilterRegistrationBean<T> sansEnregistrementAutomatique(T filtre) {
+        FilterRegistrationBean<T> enregistrement = new FilterRegistrationBean<>(filtre);
+        enregistrement.setEnabled(false);
+        return enregistrement;
     }
 
     @Bean

@@ -1,6 +1,7 @@
 package tn.sncft.trino.circulation.service;
 
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Hot state: where every running course currently is. Deliberately an interface
@@ -23,4 +24,17 @@ public interface EtatCirculationStore {
 
     /** Drops a course from hot state once its run is over. */
     void oublier(long courseId);
+
+    /**
+     * Every course currently held, so a sweeper can drop what is no longer
+     * running.
+     *
+     * <p>Eviction on a status transition alone is not a bound. It fires on the
+     * terminal statuses, but a course that ends any other way — the process
+     * restarted mid-run, the service date rolled over at 03:00, an agent left a
+     * run in ARRET_EXCEPTIONNEL and went home — keeps its window until the JVM
+     * dies. This is what lets {@link DetecteurSilence} state the bound
+     * positively instead: hot state holds today's live courses and nothing else.
+     */
+    Set<Long> coursesConnues();
 }

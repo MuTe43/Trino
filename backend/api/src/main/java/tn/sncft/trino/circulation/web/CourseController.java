@@ -16,6 +16,7 @@ import tn.sncft.trino.commun.dto.PageDTO;
 import tn.sncft.trino.referentiel.domaine.TypeTrain;
 
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -43,7 +44,8 @@ public class CourseController {
             @RequestParam(required = false) String q,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int taille) {
-        return versPage(courseService.lister(date, ligneId, gareId, statut, type, q, page, taille));
+        return versPage(courseService.lister(date, ligneId, gareId, statut, type, q,
+                CourseService.CriteresRecherche.aucun(), page, taille));
     }
 
     @GetMapping("/courses/{id}")
@@ -64,14 +66,30 @@ public class CourseController {
         return courseService.positions(id, depuis);
     }
 
-    /** Unified search over train number and name, ligne, gare and destination. */
+    /**
+     * Unified search over train number and name, ligne, gare, destination,
+     * region and a departure window — the seven criteria of §4.9.
+     *
+     * <p>{@code q} became optional in phase 9. It was required, which made
+     * {@code region}, {@code destination} and the time window unreachable on
+     * their own: a caller looking for everything leaving Sousse between 06:00
+     * and 09:00 has no train number to supply. With none of them given this
+     * returns the service date's courses, paginated, exactly as
+     * {@code /courses} does.
+     */
     @GetMapping("/recherche")
     public PageDTO<CourseResumeDTO> rechercher(
-            @RequestParam String q,
+            @RequestParam(required = false) String q,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String destination,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.TIME) LocalTime heureDebut,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.TIME) LocalTime heureFin,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int taille) {
-        return versPage(courseService.rechercher(q, date, page, taille));
+        return versPage(courseService.rechercher(q, date,
+                new CourseService.CriteresRecherche(region, destination, heureDebut, heureFin),
+                page, taille));
     }
 
     private PageDTO<CourseResumeDTO> versPage(Page<CourseResumeDTO> resultat) {

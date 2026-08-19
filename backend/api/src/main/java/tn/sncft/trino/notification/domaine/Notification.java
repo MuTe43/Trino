@@ -36,6 +36,18 @@ public class Notification {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * When the row was written, as opposed to when its dispatch was attempted.
+     *
+     * <p>{@code envoyeAt} cannot answer "how long has this been waiting": it is
+     * stamped at the start of the attempt, so it is null for a notification the
+     * executor never picked up and misleading for one whose process died mid
+     * dispatch. {@link tn.sncft.trino.notification.service.BalayeurNotification}
+     * ages rows against this and nothing else reads it.
+     */
+    @Column(name = "cree_at", nullable = false)
+    private OffsetDateTime creeAt = OffsetDateTime.now(java.time.ZoneOffset.UTC);
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "abonnement_id")
     private Abonnement abonnement;
@@ -78,6 +90,14 @@ public class Notification {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    public OffsetDateTime getCreeAt() {
+        return creeAt;
+    }
+
+    public void setCreeAt(OffsetDateTime creeAt) {
+        this.creeAt = creeAt;
     }
 
     public Abonnement getAbonnement() {
