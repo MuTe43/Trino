@@ -33,6 +33,15 @@ file or `application.yml`.**
 Run these from the repo root, each in its own terminal (the API, the simulator
 and the frontend all stay in the foreground).
 
+**This section assumes only `db` and `mailpit` are containerised.** If the full
+stack from §11.1 is up, its `api` already owns 8081 and its `simulateur` is
+already feeding positions — a second one races it against a clock that never
+goes backwards. Stop them first:
+
+```bash
+docker compose stop api simulateur web
+```
+
 ### 1.1 Containers
 
 ```bash
@@ -56,6 +65,27 @@ Flyway runs on startup. Confirm it is up:
 ```bash
 curl -s http://localhost:8081/actuator/health
 ```
+
+The body now carries the probe groups, so the check is still a `"status":"UP"`
+match but no longer an exact-string one:
+
+```
+{"status":"UP","groups":["liveness","readiness"]}
+```
+
+The two groups are readable on their own:
+
+```bash
+curl -s http://localhost:8081/actuator/health/readiness
+curl -s http://localhost:8081/actuator/health/liveness
+```
+
+Neither is a substitute for waiting on data. Nothing answers on 8081 until the
+context has refreshed — Tomcat binds after the beans are built, so Flyway has
+already migrated by the time any of the three replies — and `GenerateurCourses`
+hangs off the same `ApplicationReadyEvent` as readiness, in no defined order.
+Anything needing today's courses has to ask for the courses, which is what
+`scripts/demo.sh` does.
 
 ### 1.3 Simulator
 
@@ -246,7 +276,7 @@ curl -s localhost:8025/api/v1/messages | node -e "let d='';process.stdin.on('dat
 Empty the inbox without restarting the container:
 
 ```bash
-curl -s -X DELETE localhost:8025/api/v1/messages && echo "inbox vidée"
+curl -s -X DELETE localhost:8025/api/v1/messages && echo " - inbox vidée"
 ```
 
 > **Mailpit has no volume, on purpose.** `docker compose restart mailpit` (or
@@ -298,7 +328,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8081/api/v1/regles-al
 
 ### 5.6 The rate limit
 
-Eleven posts in a minute from one IP; the eleventh is `429 TROP_DE_REQUETES`.
+Ten posts a minute per IP; the eleventh is `429 TROP_DE_REQUETES`. The window is
+fixed and shared with every other `POST /abonnements` from this machine, so if
+you ran 5.1 within the same minute the refusal arrives that many posts early —
+which is the limit working, not an off-by-one.
 
 ```bash
 for i in $(seq 1 11); do curl -s -o /dev/null -w "$i: %{http_code}\n" -X POST localhost:8081/api/v1/abonnements -H 'Content-Type: application/json' -H "X-Abonne: $JETON" -d '{"cibleType":"GARE","cibleId":'"$i"',"canaux":["IN_APP"]}'; done
@@ -398,10 +431,17 @@ curl -s "localhost:8081/api/v1/courses?statut=RETARDE&taille=5" | node -e "let d
 curl -s "localhost:8081/api/v1/gares/1/departs?limite=10" | j .length
 ```
 
-Dashboards (`RESPONSABLE_EXPLOITATION` only — admin gets 403):
+Dashboards (`RESPONSABLE_EXPLOITATION` only — admin gets 403). **Every date
+parameter here is required**, unlike the filters elsewhere in the API: `date` on
+`kpi` and `retards-par-ligne`, `du`/`au` on `heatmap`, `distribution-retards` and
+both reports. Omitting one is a `400 VALIDATION_ECHOUEE` naming the parameter.
 
 ```bash
-curl -s -H "Authorization: Bearer $RESP" "localhost:8081/api/v1/tableau-bord/kpi" | j ''
+curl -s -H "Authorization: Bearer $RESP" "localhost:8081/api/v1/tableau-bord/kpi?date=$(date +%F)" | j ''
+```
+
+```bash
+curl -s -H "Authorization: Bearer $RESP" "localhost:8081/api/v1/tableau-bord/heatmap?du=2026-08-01&au=$(date +%F)" | j .length
 ```
 
 Connection journal (`ADMINISTRATEUR` only):
@@ -454,7 +494,7 @@ docker exec trino-db psql -U trino -d trino -c "delete from incident where surve
 Empty the mail inbox:
 
 ```bash
-curl -s -X DELETE localhost:8025/api/v1/messages && echo "inbox vidée"
+curl -s -X DELETE localhost:8025/api/v1/messages && echo " - inbox vidée"
 ```
 
 Accounts created while testing cannot be deleted — `journal_connexion` and
@@ -482,9 +522,13 @@ docker compose down -v && docker compose up -d db mailpit
 - **Only `IN_APP` and `EMAIL` are offered in the UI.** `SMS` is a stub that logs
   (there is no phone number anywhere in the model) and `AFFICHAGE` is the station
   board, already delivered over `gare:{id}`.
-- **Two `psql` ports look plausible.** 5432 is an unrelated service's PostgreSQL;
-  Trino is on **5433**. Connecting to the wrong one gives confusing "table does
-  not exist" errors.
+- **Two `psql` ports look plausible, and `docker ps` shows both.** Compose
+  *appends* to a `ports` list rather than replacing it, so with
+  `docker-compose.override.yml` loaded the db container publishes 5432 **and**
+  5433. Only 5433 reaches it: on 5432 the unrelated PostgreSQL wins the bind and
+  answers `authentification par mot de passe échouée pour l'utilisateur
+  « trino »` — or, if you do have a role by that name over there, confusing
+  "table does not exist" errors.
 - **PowerShell differs.** No `&&` chaining (`A; if ($?) { B }`), and env vars are
   `$env:VAR = 'x'; cmd` rather than `VAR=x cmd`. The commands above assume Git
   Bash.
@@ -506,7 +550,14 @@ comptez deux minutes le temps que Flyway migre et que la journée se matérialis
 
 ### 11.2 Test de charge
 
+Le simulateur de la pile doit être arrêté avant celui du test : deux producteurs
+sur une même API se disputent une horloge simulée qui ne recule jamais, et celui
+du conteneur continue de poster des positions pour des courses que l'autre a
+laissées derrière lui. `demo.sh` fait le même arrêt, pour la même raison mesurée
+(« 0 position(s) acceptée(s), 178 rejetée(s) »).
+
 ```bash
+docker compose stop simulateur
 TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/charge.sh
 docker compose restart api                       # horloge simulée remise à zéro
 cd backend && TRINO_API_BASE_URL=http://localhost:8081   TRINO_SIM_HEURE_DEBUT=04:55 TRINO_SIM_ACCELERATION=5   ./mvnw -q -pl simulateur spring-boot:run
@@ -522,6 +573,7 @@ si elle reste, et rend la carte illisible :
 
 ```bash
 TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/charge.sh --nettoyer
+docker compose start simulateur                  # rendre la main au flux normal
 ```
 
 Pour la mémoire JVM, démarrer l'API avec `--spring.profiles.active=metrologie`,
@@ -539,12 +591,33 @@ gunzip -c sauvegardes/trino-AAAA-MM-JJ-hhmm.sql.gz | docker exec -i trino-db psq
 ### 11.4 Démonstration
 
 ```bash
-docker compose stop api        # obligatoire : demo.sh refuse de tourner sinon
-bash scripts/demo.sh           # remet à zéro, régénère, historise, lance le feed
+TRINO_DB_URL=jdbc:postgresql://localhost:5433/trino bash scripts/demo.sh
 ```
 
-Le script imprime les URL exactes des huit étapes, identifiants dérivés à
-l'exécution.
+Remet à zéro, régénère la journée, synthétise l'historique, puis lance le feed
+accéléré. Le script imprime les URL exactes des huit étapes, identifiants dérivés
+à l'exécution.
+
+**Laissez la pile tourner.** Le script arrête lui-même le simulateur et l'API le
+temps de la remise à zéro, puis **redémarre l'API** — parce qu'il faut qu'elle
+reparte pour régénérer la journée qu'il vient de supprimer
+(`GenerateurCourses` matérialise le jour sur `ApplicationReadyEvent`). Il ne
+redémarre que ce qu'il a arrêté : si vous faites `docker compose stop api`
+d'abord, la journée est supprimée, rien ne la recrée, et le script attend trois
+minutes avant d'abandonner. Une version antérieure refusait de tourner face à une
+API vivante, ce qui était contradictoire — l'étape 4 démarre un simulateur qui a
+besoin d'une API qui répond.
+
+`TRINO_DB_URL` est nécessaire ici parce que `backfill.sh`, appelé à l'étape 2,
+vise `localhost:5432` par défaut. Sans elle, le script s'arrête en le disant
+plutôt que de servir des graphiques plats.
+
+Pour rendre la main au flux temps réel de la pile, une fois la démonstration
+terminée :
+
+```bash
+docker compose start simulateur
+```
 
 ### 11.5 Vérifier le balayage des notifications orphelines
 

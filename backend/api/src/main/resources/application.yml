@@ -55,6 +55,21 @@ management:
   endpoint:
     health:
       show-details: never
+      # Boot auto-enables the liveness/readiness split only on Kubernetes, so
+      # without this /actuator/health/readiness is a 404 -- which is what
+      # decision 8 was claiming to have. Turning it on costs two indicators and
+      # gives the aggregate a meaning it did not have: /actuator/health answers
+      # UP as soon as Tomcat is listening, whereas readiness stays
+      # OUT_OF_SERVICE until ApplicationReadyEvent, i.e. until Flyway has
+      # migrated and the context is fully refreshed.
+      #
+      # Readiness is NOT proof that the day has been materialised. The
+      # ACCEPTING_TRAFFIC transition and GenerateurCourses both hang off
+      # ApplicationReadyEvent and their order is unspecified, so a probe that
+      # needs today's courses must still assert on the courses themselves --
+      # which is exactly what scripts/demo.sh does, and why.
+      probes:
+        enabled: true
 
 trino:
   cors:

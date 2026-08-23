@@ -12,6 +12,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
@@ -87,6 +88,28 @@ public class ApiExceptionHandler {
                     .toList();
         }
         return reponse(HttpStatus.BAD_REQUEST, "VALIDATION_ECHOUEE", "La requête est invalide.", details);
+    }
+
+    /**
+     * A required query parameter that was not sent. Its own branch rather than
+     * the generic 400 below, because this is the one malformed-request case
+     * that can name the offending field: the envelope carries
+     * {@code {"champ": "date", "probleme": "obligatoire"}}, the exact shape the
+     * contract documents.
+     *
+     * <p>Without it the exception reached the {@link Exception} catch-all and
+     * every analytics endpoint answered <b>500 ERREUR_INTERNE</b> to a call that
+     * simply omitted {@code date} or {@code du}/{@code au} — a client error
+     * reported as a server fault, with a stack trace logged at ERROR for each
+     * one. The frontend always sends them, so this only ever surfaced to
+     * somebody calling the API by hand, which is precisely who the message has
+     * to be useful to. Found by re-running the runbook's own curl line against
+     * the live stack.
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErreurDTO> gererParametreManquant(MissingServletRequestParameterException ex) {
+        return reponse(HttpStatus.BAD_REQUEST, "VALIDATION_ECHOUEE", "La requête est invalide.",
+                List.of(new ErreurDTO.DetailErreurDTO(ex.getParameterName(), "obligatoire")));
     }
 
     @ExceptionHandler({MethodArgumentTypeMismatchException.class, HttpMessageNotReadableException.class,

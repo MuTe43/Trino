@@ -14,8 +14,11 @@ import java.time.OffsetDateTime;
  * subscription reference (which means nothing to them); the second is an SMTP
  * diagnostic for whoever runs the system, not for a passenger.
  *
- * <p>{@code envoyeAt} is null while the dispatch is still in flight. The client
- * orders on {@code id} rather than on this field for exactly that reason.
+ * <p>{@code envoyeAt} is stamped at the top of the dispatch, not at the end, so
+ * it is null only while the row is still queued -- once an adapter has been
+ * reached it carries a time whether that adapter succeeded or threw. It can
+ * still be null, so the client orders on {@code id}: monotonic, never null, and
+ * on an append-only table it is the emission order.
  */
 public record NotificationDTO(
         Long id,

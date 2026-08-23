@@ -13,10 +13,19 @@ So the model splits:
 - `Train` — rolling stock. Number, name, type, capacity, max speed. No status.
 - `Course` — one dated run. Holds status, current delay, delay cause.
 
-The spec also never defines where *heure théorique* comes from. `Desserte`
-supplies it: the ordered stop pattern of a line, with an offset in minutes from
-departure for each station. A `Course` is materialised from a `Desserte` plus a
-departure time, producing one `PassageGare` row per stop.
+The spec also never defines where *heure théorique* comes from. Two tables
+supply it between them:
+
+- `Desserte` — the ordered stop pattern of a line, with an offset in minutes
+  from departure for each station;
+- `Horaire` — the departure slots themselves, one row per (train, time of day,
+  direction).
+
+A `Course` is materialised from an `Horaire` (which fixes the train, the line and
+the departure time) plus that line's `Desserte` (which fixes every stop), giving
+one `PassageGare` row per stop. `GenerateurCourses` does that once a day at 03:00
+`Africa/Tunis` and again on `ApplicationReadyEvent`, so a freshly started API
+always has today.
 
 Flag both of these to the supervisor in writing.
 
@@ -56,6 +65,20 @@ Seed 0 on suburban stops and 1-3 on long-distance segments.
 
 ### circulation
 
+**horaire** — the departure slots the daily timetable is generated from (V4).
+`id` bigserial PK · `ligne_id` FK · `train_id` FK · `sens` varchar(10)
+(check `ALLER`/`RETOUR`) · `heure_depart` time · `actif` boolean default true
+unique (`train_id`,`heure_depart`), index on (`ligne_id`)
+
+The one table in the model that holds a bare `time` rather than a `timestamptz`,
+and legitimately: a slot is a time of day in the published timetable, not an
+instant. `GenerateurCourses` resolves it against the service date in
+`Africa/Tunis` and stores the result as UTC in `course.depart_theorique`
+(invariant 6). The unique constraint is what stops a trainset being booked onto
+two runs at once; slots are spaced by each ligne's `temps_theorique_min` so a
+train is never due out again before its previous run could plausibly have
+finished.
+
 **course**
 `id` bigserial PK · `train_id` FK · `ligne_id` FK · `date_service` date ·
 `sens` enum SensCourse · `depart_theorique` timestamptz ·
@@ -67,11 +90,26 @@ index on (`date_service`,`statut`), (`ligne_id`,`date_service`)
 
 **passage_gare**
 `id` bigserial PK · `course_id` FK · `gare_id` FK · `ordre` smallint ·
+`pk_km` numeric(7,2) · `marge_min` smallint default 0 ·
 `arrivee_theorique` timestamptz · `depart_theorique` timestamptz ·
 `arrivee_reelle` timestamptz null · `depart_reelle` timestamptz null ·
 `arrivee_estimee` timestamptz · `depart_estimee` timestamptz ·
 `quai` varchar(10) null · `retard_min` int default 0
 unique (`course_id`,`ordre`)
+
+`pk_km` and `marge_min` are resolved from the `desserte` at materialisation and
+stored here, never joined back. In `ALLER` they are the desserte's own values; in
+`RETOUR` the line is walked backwards, so `pk_km` becomes `pk_total - pk_km` and
+the slack shifts one stop — the segment *arriving* at a stop on the way back is
+the one that *departed* from it on the way out. Either way the course keeps its
+own copy, because a course is a historical fact: editing the stop pattern must
+not silently move where yesterday's train was, nor rewrite the slack it was
+judged against. It also keeps the delay engine and the ETA calculation off a join
+on the hot path.
+
+`chk_passage_estimee_suit_theorique` enforces the null pairing described below —
+`(arrivee_theorique is null) = (arrivee_estimee is null)`, and the same for the
+departures.
 
 ### The three times — spec section 4.5
 
@@ -146,6 +184,23 @@ Two check constraints beyond the column types (V7):
 `adresse_ip` varchar(45) · `user_agent` text · `succes` boolean ·
 `horodatage` timestamptz
 
+**refresh_token**
+`id` bigserial PK · `utilisateur_id` FK · `token_hash` varchar(255) unique ·
+`expire_at` timestamptz · `revoque` boolean default false ·
+`cree_at` timestamptz default now()
+index on (`utilisateur_id`)
+
+Only the hash is stored, like a password: the token itself is a bearer credential
+and the table is readable by anyone with database access. A revoked row is
+**not** deleted at revocation — between then and expiry it is the only evidence
+that a presented token had genuinely been issued and then withdrawn, which is a
+different answer from a forged one. `PurgeJetons` clears rows expired longer ago
+than a token's lifetime, at 03:30 `Africa/Tunis` (decision 13).
+
+Together with `journal_connexion`, this is why a `utilisateur` is deactivated and
+never deleted: two tables reference the row, and an audit trail with holes in it
+is not an audit trail.
+
 ### notification
 
 **abonnement** — who wants to hear about what (V8).
@@ -185,12 +240,14 @@ every estimate. `modifie_par` is null until a human edits the row: the four
 defaults V8 seeds were configured by nobody, and stamping them with `utilisateur
 1` would put a name against a decision that person never made.
 
-**notification** — what was actually emitted (V8).
+**notification** — what was actually emitted (V8, `cree_at` in V9).
 `id` bigserial PK · `abonnement_id` FK null · `evenement` enum Evenement ·
 `course_id` FK null · `destinataire` varchar(160) · `canal` enum CanalType ·
 `sujet` varchar(200) · `contenu` text · `statut` enum StatutNotification ·
-`envoye_at` timestamptz null · `erreur` text null
-index on (`abonnement_id`,`envoye_at` desc)
+`cree_at` timestamptz default now() · `envoye_at` timestamptz null ·
+`erreur` text null
+index on (`abonnement_id`,`envoye_at` desc),
+partial index on (`cree_at`) where `statut = 'EN_ATTENTE'`
 
 `evenement` and `course_id` are also beyond the phase file's list, and also
 forced: the deduplication key is (subscription, event, course), so without them
@@ -200,8 +257,23 @@ acceptance query groups on.
 The row is written **before** the dispatch is attempted and updated after. A
 channel that is down has to leave evidence: an `ECHEC` row with its cause is the
 difference between "SMTP was unreachable at 08:14" and a notification that
-silently never happened. `envoye_at` is null while `EN_ATTENTE` and is stamped
-when the attempt completes, on success and failure alike.
+silently never happened. `envoye_at` is stamped at the top of the dispatch, on
+the way in — `CanalInApp` puts it in the SSE frame, and a frame carrying a null
+emission time would be worse than one carrying the instant it was emitted. It is
+therefore null only while the row is still queued, never once an adapter has been
+reached, whether that adapter went on to succeed or to throw.
+
+`cree_at` is the two columns' difference and the reason V9 exists. Because
+`envoye_at` marks the attempt's *start*, it cannot age a row that is stuck: a
+notification the executor never picked up has null there, and one whose JVM died
+mid-dispatch has a time that says when the attempt started, not how long the row
+has been waiting. With a creation time, `BalayeurNotification` can fail every
+`EN_ATTENTE` row older than the running process (at startup) or older than the
+ten-minute delivery deadline (every five minutes), which is what makes
+`EN_ATTENTE` mean "in flight right now" rather than "in flight, or abandoned last
+week". The index is partial because it serves only that one query — `ENVOYE` and
+`ECHEC` are the overwhelming majority and indexing them would cost every insert
+for a scan nobody performs.
 
 **Indexes carried in with V8.** `journal_connexion` gained
 `idx_journal_horodatage` and `idx_journal_utilisateur`: phase 7 built

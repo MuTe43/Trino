@@ -25,10 +25,19 @@ strongest claim in the soutenance; do not collapse it for convenience.
 
 ## 3. SSE, not WebSocket
 
-Traffic is server -> client only. SSE gives automatic reconnection with
-`Last-Event-ID`, survives proxies, and needs no sub-protocol. WebSocket would
-add a handshake, a heartbeat protocol, and STOMP or a hand-rolled frame format
-for nothing. Revisit only if the client ever needs to push.
+Traffic is server -> client only. SSE reconnects on its own, survives proxies,
+and needs no sub-protocol. WebSocket would add a handshake, a heartbeat protocol,
+and STOMP or a hand-rolled frame format for nothing. Revisit only if the client
+ever needs to push.
+
+**The reconnection is automatic; the replay is not.** No frame carries an `id`,
+so a reconnecting client cannot resume with `Last-Event-ID` and deltas emitted
+while it was away are lost. That is deliberate: replay means the server holds a
+per-channel buffer and a retention rule for it, which is a message broker
+(decision 4). The client refetches its snapshot over REST instead and resumes
+applying deltas — it already has that path, because it is how every page starts.
+It is worth stating because `Last-Event-ID` is the feature people cite when
+choosing SSE, and this delivery does not use it.
 
 ## 4. No Redis
 
@@ -75,10 +84,45 @@ was worse than either.
 ## 8. Availability is designed for, not claimed
 
 The spec asks for 99.9% and 24/7. Neither is testable in this delivery. What is
-actually implemented: stateless API layer, Spring Actuator health and readiness
-probes, graceful degradation when the position feed stops (courses move to
-`ARRET_EXCEPTIONNEL` rather than freezing on stale data), and Postgres backup
-documented as a `pg_dump` cron. Report it as design intent with the gap stated.
+actually implemented: a stateless API layer; health **and** readiness probes;
+graceful degradation when the position feed stops (courses move to
+`ARRET_EXCEPTIONNEL` rather than freezing on stale data); and a Postgres backup,
+`scripts/sauvegarde.sh`, with a `pg_dump` cron line in the README. Report it as
+design intent with the gap stated.
+
+**The probes are `health.probes.enabled: true`, not a Kubernetes accident.** Boot
+auto-enables the liveness/readiness split only when it detects Kubernetes, so
+until it was set explicitly `/actuator/health/readiness` answered 404 while this
+document claimed otherwise. Three endpoints now exist and they answer different
+questions:
+
+| Endpoint | Answers |
+|---|---|
+| `/actuator/health` | the aggregate — every indicator, the database included |
+| `/actuator/health/liveness` | is the context broken beyond recovery (restart me) |
+| `/actuator/health/readiness` | may traffic be sent right now |
+
+What readiness adds is a state that can be **withdrawn at runtime**. The
+aggregate answers "is anything broken"; readiness answers "should you send me
+work", and an `AvailabilityChangeEvent` can set it to `OUT_OF_SERVICE` on a
+process that is perfectly healthy — draining before a shutdown, or refusing
+traffic while a slow job runs. There is nothing to route around it here, which
+is the honest scope of this: it is the correct probe for a proxy or an
+orchestrator to poll, and this delivery has neither. `docker-compose.yml` keeps
+gating on the aggregate; changing that is a Compose edit, not a code one.
+
+**Readiness is not a claim that the day exists.** The `ACCEPTING_TRAFFIC`
+transition and `GenerateurCourses` both hang off `ApplicationReadyEvent` and
+Spring does not order listeners, so a client that needs today's courses must
+assert on the courses. `scripts/demo.sh` does exactly that, and the comment there
+records the race that cost a run. Note also that nothing answers on 8081 at all
+until the context has refreshed — Tomcat binds its port after the singletons are
+built, so Flyway has already migrated by the time any probe replies. Neither
+probe is a substitute for waiting on the data.
+
+The `metrologie` profile adds `metrics`, and only for the load test: `/actuator/**`
+is permitAll, since a probe has to be reachable by something holding no JWT, so
+exposing metrics exposes them anonymously.
 
 ## 9. Resolving an incident is a separate endpoint, not a PATCH field
 
@@ -267,8 +311,9 @@ La couche applicative est déjà agnostique, et c'est cela qui compte pour le
 rapport. En production, TLS se termine sur un proxy inverse devant l'API et le
 web ; trois valeurs de configuration suivent, aucune ligne de code :
 
-- le proxy pose `X-Forwarded-Proto: https`, que Boot lit pour construire ses URL
-  absolues (`server.forward-headers-strategy=framework`) ;
+- `server.forward-headers-strategy=framework`, absent de `application.yml`
+  aujourd'hui, pour que Boot tienne compte du `X-Forwarded-Proto: https` posé par
+  le proxy ;
 - `refreshToken` et `jeton_abonne` passent en `Secure` ;
 - `TRINO_CORS_ORIGINES` reçoit les origines `https://` réelles.
 

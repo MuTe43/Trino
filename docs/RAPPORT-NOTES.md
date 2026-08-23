@@ -642,7 +642,11 @@ repart de `heure-debut`, donc chaque ping arrive horodaté plusieurs heures avan
 ce que l'API a déjà observé, et `DetecteurSilence` conclut au silence. Mesuré :
 211 courses basculées en une minute. Ce n'est pas un défaut du produit ; c'est un
 piège de démonstration, et l'étape 8 (« tuer le simulateur ») mène droit dessus.
-`scripts/demo.sh` refuse maintenant de s'exécuter si l'API répond.
+`scripts/demo.sh` a d'abord *refusé* de s'exécuter si l'API répondait. C'était
+contradictoire : son étape 4 démarre un simulateur qui a besoin d'une API vivante,
+et l'étape 2 a besoin que l'API redémarre pour régénérer la journée qu'elle vient
+de supprimer. Le script **cycle** donc l'API — il l'arrête, fait la remise à zéro,
+la redémarre — au lieu de refuser.
 
 **Un paramètre nul dont PostgreSQL ne peut pas deviner le type.** Les quatre
 critères de recherche ajoutés au §4.9 ont d'abord été écrits sur le patron
@@ -693,6 +697,52 @@ question « que veut dire cette couleur » : il y a donc exactement une ligne pa
 couleur, et l'intervalle nomme toute la bande couverte. Inventer deux couleurs
 aurait signifié une seconde table de couleurs — précisément ce que l'invariant 8
 interdit.
+
+### Relecture finale — la documentation confrontée au code
+
+Une passe de vérification a rejoué, une par une, toutes les commandes de
+`README.md` et de `docs/RUNBOOK.md` contre la pile réellement en marche, puis
+confronté les trois fichiers d'architecture au code. Elle a trouvé une panne
+fonctionnelle, deux commandes qui échouaient telles qu'écrites et une série
+d'énoncés devenus faux.
+
+**Un paramètre manquant répondait 500.** `GET /tableau-bord/kpi` — la commande
+donnée telle quelle dans le runbook — renvoyait `ERREUR_INTERNE` avec une trace
+au journal. Toutes les entrées d'analytique exigent leur fenêtre de dates, et
+`MissingServletRequestParameterException` n'avait aucune branche dans
+`ApiExceptionHandler` : elle atteignait le `catch` générique, si bien qu'une
+faute de l'appelant était rapportée comme une panne du serveur. Invisible depuis
+l'interface, qui envoie toujours les dates ; visible uniquement de celui qui
+appelle l'API à la main, c'est-à-dire précisément celui à qui le message doit
+servir. La branche existe maintenant et nomme le paramètre —
+`{"champ": "date", "probleme": "obligatoire"}`, la forme que le contrat donnait
+déjà en exemple. `TableauBordControllerTest` l'épingle.
+
+**Deux ports décalés, un seul documenté.** Le README annonçait la base sur 5432.
+`docker-compose.override.yml` la publie sur 5433, et Compose **ajoute** à la
+liste `ports` au lieu de la remplacer : le conteneur est donc publié sur les deux,
+mais sur 5432 c'est l'autre PostgreSQL qui gagne le bind et répond une erreur
+d'authentification. La commande de test du README visait ce mauvais serveur, et
+sa section « développement » lançait l'API sur 8080 — occupé — avec la source de
+données par défaut, elle aussi sur 5432. Deux échecs dans une même commande, dans
+le fichier qui sert de porte d'entrée.
+
+**Trois énoncés décrivaient l'intention plutôt que le livré.** Le contrat d'API
+affirmait encore que rien ne balaye les notifications bloquées « — travail de
+phase 9 », alors que la phase 9 avait livré `BalayeurNotification`. Le runbook
+faisait précéder `demo.sh` d'un `docker compose stop api` « obligatoire », hérité
+de la version qui refusait de tourner : appliqué à la version actuelle, il
+supprime la journée sans que rien ne la régénère et le script abandonne au bout
+de trois minutes. Et la décision 8 revendiquait des sondes *readiness* qui
+répondent 404 — seul `health` est exposé.
+
+**Ce que cela dit.** Aucune de ces quatre choses n'était détectable par un test
+ou par le compilateur : ce sont des affirmations en prose, et rien ne les
+confronte au système sinon quelqu'un qui les exécute. Une documentation amendée
+phase après phase dérive exactement là où elle décrit une décision *à venir* —
+la formule « c'est un travail de phase n+1 » est vraie le jour où on l'écrit et
+fausse dès que la phase n+1 livre. Les rejouer en bloc, une fois, à la fin, est
+le seul moyen trouvé de les rattraper.
 
 ---
 

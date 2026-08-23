@@ -528,9 +528,12 @@ portal, not a failure to authenticate.
 
 `NotificationDTO` exposes neither `destinataire` nor `erreur`: the first is
 either the reader's own address or an internal subscription reference, the second
-is an SMTP diagnostic for whoever runs the system. `envoyeAt` is null while a
-dispatch is in flight, which is why lists order on `id` — monotonic, never null,
-and on an append-only table it is the emission order.
+is an SMTP diagnostic for whoever runs the system. `envoyeAt` is stamped at the
+top of the dispatch rather than at the end — `CanalInApp` puts it in the SSE
+frame — so it is null for a row still queued and non-null for one an adapter has
+reached, success or failure alike. Either way it can be null, which is why lists
+order on `id`: monotonic, never null, and on an append-only table it is the
+emission order.
 
 ```json
 {
@@ -573,7 +576,7 @@ subscriber.
 | Canal | État | Notes |
 |---|---|---|
 | `IN_APP` | **fonctionnel** | SSE on `abonne:{identité}`, tagged `abonne:moi`. |
-| `EMAIL` | **fonctionnel** | Real SMTP to Mailpit (`localhost:8025`). |
+| `EMAIL` | **fonctionnel** | Real SMTP to Mailpit, port `1025`. The inbox to open on screen is the web one, `localhost:8025`. |
 | `SMS` | stub | `CanalSmsStub` logs a Twilio-shaped payload. No account, and no phone number anywhere in the model. |
 | `AFFICHAGE` | existing | The station board already consumes `gare:{id}`. The adapter records the row as sent and emits nothing. |
 
@@ -584,14 +587,28 @@ either way — measured at 16–36 ms for `POST /ingest/positions` with SMTP poi
 at a closed port.
 
 **A channel that fails leaves an `ECHEC` row with `erreur` populated.** That
-covers the adapter-throws path, and only that path. A row whose dispatch never
-runs to completion — the process is killed, or the executor's bounded queue
-overflows and the task is discarded — stays `EN_ATTENTE` with `envoye_at` and
-`erreur` both null, for ever: nothing retries, and nothing sweeps for stale rows
-at startup. `GET /notifications` shows it to the passenger in that state.
-Measured: 344 rows left `EN_ATTENTE` by a `taskkill /F` of the API mid-flight,
-and none at all across a clean run. Recorded rather than fixed — a retry or a
-startup sweep is phase 9 work.
+covers the adapter-throws path. A row whose dispatch never runs to completion —
+the process is killed, or the executor's bounded queue overflows and the task is
+discarded — used to stay `EN_ATTENTE` with `envoye_at` and `erreur` both null,
+for ever, and `GET /notifications` showed it to the passenger in that state.
+Measured in phase 8: 344 such rows left by a `taskkill /F` of the API mid-flight,
+and none at all across a clean run.
+
+**Phase 9 closed that state** with `BalayeurNotification` and V9's `cree_at`
+column. `EN_ATTENTE` now means "being delivered right now": a sweep on
+`ApplicationReadyEvent` fails every row older than this process's start —
+an exact test, not an age heuristic, since such a row belongs to a process that
+no longer exists — and a five-minute sweep fails anything that has sat past the
+ten-minute delivery deadline, which catches what the startup one cannot see (a
+task rejected by a saturated executor, or an error escaping the dispatcher's
+`catch`). The two write different causes, so the reason is legible from the row:
+*Processus interrompu avant la remise* and *Restée en attente au-delà du délai de
+remise*. See RUNBOOK §11.5 to exercise it.
+
+**Nothing retries, and that is the deliberate half.** A retry needs an idempotent
+channel and a backoff, and a delay notification is worth very little by the time
+one would land — the train has arrived. Recording the loss is what can be built
+without a broker (decision 4).
 
 Notifications are deduplicated: one per `(abonnement, evenement, course)` per **30
 simulated minutes**, on `HorlogeCirculation` rather than the wall clock. At the
@@ -604,14 +621,31 @@ within half an hour reached nobody.
 ## Tableau de bord et rapports
 
 ```
-GET /tableau-bord/kpi?date=
-GET /tableau-bord/retards-par-ligne?date=
-GET /tableau-bord/heatmap?du=&au=            gare x tranche horaire
-GET /tableau-bord/distribution-retards?du=&au=   courses par tranche de retard
-GET /rapports/ponctualite?du=&au=&granularite=JOUR|MOIS
-GET /rapports/incidents?du=&au=              type x gravité, délai moyen de résolution
-GET /rapports/{nom}/export?du=&au=&format=csv|xlsx
+GET /tableau-bord/kpi?date=                  date REQUISE
+GET /tableau-bord/retards-par-ligne?date=    date REQUISE
+GET /tableau-bord/heatmap?du=&au=            du/au REQUIS. gare x tranche horaire
+GET /tableau-bord/distribution-retards?du=&au=   du/au REQUIS
+GET /rapports/ponctualite?du=&au=&granularite=JOUR|MOIS      du/au REQUIS
+GET /rapports/incidents?du=&au=              du/au REQUIS. type x gravité, délai moyen
+GET /rapports/{nom}/export?du=&au=&format=csv|xlsx           du/au REQUIS
 ```
+
+**These are the only required query parameters in the API**, and the exception is
+deliberate: every other `?param=` is a filter whose absence means "no filter",
+whereas an analytics window has no sensible default — "today" for `date` would
+make a stale bookmark silently report a different day, and an unbounded `du`/`au`
+scans the whole history. There is nothing to fall back to, so the caller states
+it.
+
+A missing one is `400 VALIDATION_ECHOUEE` naming the parameter:
+`details: [{"champ": "date", "probleme": "obligatoire"}]`. Until the final
+documentation-reconciliation pass it was **500 `ERREUR_INTERNE`** —
+`MissingServletRequestParameterException` had no branch in `ApiExceptionHandler`
+and reached the `Exception` catch-all, so a plain client mistake was reported as
+a server fault and logged with a stack trace. The
+UI always sends the dates, so it only ever surfaced to somebody calling the API
+by hand — the one caller who needs the message to be useful.
+`TableauBordControllerTest` pins it.
 
 `{nom}` is one of five, registered by name in `ServiceExport`:
 
